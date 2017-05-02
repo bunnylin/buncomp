@@ -1,0 +1,31 @@
+BunnyIcon ICON "main.ico"
+BunnyHop ACCELERATORS
+BEGIN
+        "O", 90, CONTROL, VIRTKEY
+        "S", 91, CONTROL, VIRTKEY
+        "C", 94, CONTROL, VIRTKEY
+        "V", 95, CONTROL, VIRTKEY
+        "M", 96, CONTROL, VIRTKEY
+END
+BunnyMenu MENU
+BEGIN
+        POPUP "&File"
+        BEGIN
+                MENUITEM "&Open a PNG or BMP\tCtrl+O", 90
+                MENUITEM "&Batch process", 89
+                MENUITEM "&Read settings from a file", 92
+                MENUITEM "&Write settings to a file", 93
+                MENUITEM "E&xit", 100
+        END
+        POPUP "&Command"
+        BEGIN
+                MENUITEM "&Paste from clipboard\tCtrl+V", 95
+                MENUITEM "&Clear preset palette", 97
+                MENUITEM "&Scrap source's alpha channel", 88
+                MENUITEM "Set &Alpha rendering color", 98
+        END
+        POPUP "&Help"
+        BEGIN
+                MENUITEM "&Readme", 99
+        END
+END
