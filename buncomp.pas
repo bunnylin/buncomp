@@ -3,37 +3,44 @@ program buncomp;
 {                                                                           }
 { Bunnylin's Chromaticity Compressor                                        }
 {                                                                           }
-{ (compiles for win32 with FPC 3.0.2)                                       }
+{ (compiles for win32 with FPC 3.0.4)                                       }
 {                                                                           }
 { This utility compresses a source image's colors to 64k or less,           }
 { optimising the palette distribution for best visual presentation.         }
 { The algorithm is pretty heavy, so it's not appropriate for real-time use. }
 {                                                                           }
-{ CC0, 2014-2017 :: Kirinn Bunnylin / MoonCore                              }
+{ CC0, 2014-2018 :: Kirinn Bunnylin / MoonCore                              }
 { This program and its source code may be freely used, studied, copied,     }
 { consumed, modified and distributed, by anyone, for any purpose.           }
 {                                                                           }
 { This program assumes a reference white point of D65 as defined in BT.709  }
 { and BT.2020, the most common standard.                                    }
 {                                                                           }
-{ TODO: The algorithm could be improved by using a least-total-error        }
-{ strategy, while taking dithering into account... could be slower, though. }
-{ Try placing virtual palette entries at dithered color points; 50-50 puts  }
-{ one virtual pe halfway between its parent colors, 75-25 puts three, etc.  }
-{ Also, try cielab again, the CIEDE2000 definition is the latest word on    }
-{ the subject. A color comparison implementation exists already for Excel.  }
-{ - Modularise the code                                                     }
-{ - Source image hgram buckets should probably persist, and increase to 8k? }
-{ - Add command line functionality if not yet preset, add to documentation  }
-{ - Could the program accept new source images by drag and drop?            }
-{ - Switch to fpGUI to achieve cross-platform support                       }
-{ - Change YCbCr to LXY, can't be any worse                                 }
-{ - Revisit the flat color detector to dismiss any color areas that are not }
-{   bordered at some distance by a distinctive edge; otherwise chances are  }
-{   that a seemingly flat expanse is just a part of a gradient              }
-{ - take more attractive screenshots for site                               }
-{ TODO: there's another thing to do at the image rendering thing            }
-{                                                                           }
+
+// TODO: The algorithm could be improved by using a least-total-error
+// strategy, while taking dithering into account... could be slower, though.
+// Try placing virtual palette entries at dithered color points; 50-50 puts
+// one virtual pe halfway between its parent colors, 75-25 puts three, etc.
+
+// - Alpha in diffRGB etc must be premultiplied, otherwise a preset palette
+//   item with a colored alpha may be ignored in favor of a solid black
+// - Sierra lite dithering broken? when alpha present?
+// - Paste to clipboard should use a fast PNG, with dib v5 only secondarily
+// - Modularise the code -> image analysis / color reduction / ui modules
+// - Source image hgram buckets should probably persist, and increase to 8k?
+// - Add command line functionality if not yet preset, add to documentation
+// - Add menu select "Export using minimal palette", default yes; when off,
+//   saves and copies to clipboard in 32-bit RGBA
+// - Could the program accept new source images by drag and drop?
+// - Switch to fpGUI to achieve cross-platform support
+// - Change YCbCr to YCH, perhaps better suited
+// - Try cielab again, the CIEDE2000 definition is the latest word on the
+//   subject. A color comparison implementation exists already for Excel.
+// - Revisit the flat color detector to dismiss any color areas that are not
+//   bordered at some distance by a distinctive edge; otherwise chances are
+//   that a seemingly flat expanse is just a part of a gradient
+// - take more attractive screenshots for site
+// TODO: there's another thing to do at the image rendering thing
 
 {$mode fpc}
 {$apptype GUI}
@@ -226,28 +233,28 @@ end;
 function errortxt(ernum : byte) : string;
 begin
  case ernum of
-  // FPC errors
-  2: errortxt := 'File not found';
-  3: errortxt := 'Path not found';
-  5: errortxt := 'Access denied';
-  6: errortxt := 'File handle variable trashed, memory corrupted!!';
-  100: errortxt := 'Disk read error';
-  101: errortxt := 'Disk write error, disk full?';
-  103: errortxt := 'File not open';
-  200: errortxt := 'Div by zero!!';
-  201: errortxt := 'Range check error';
-  203: errortxt := 'Heap overflow - not enough memory, possibly corrupted resource size?';
-  204: errortxt := 'Invalid pointer operation';
-  215: errortxt := 'Arithmetic overflow';
-  216: errortxt := 'General protection fault';
-  // BCC errors
-  99: errortxt := 'CreateWindow failed!';
-  98: errortxt := 'RegisterClass failed, while trying to create a window.';
-  84: errortxt := 'Could not fetch WinSystem directory!';
-  86: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA was not found in shell32.dll!';
-  87: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA returned an error!';
+   // FPC errors
+   2: errortxt := 'File not found';
+   3: errortxt := 'Path not found';
+   5: errortxt := 'Access denied';
+   6: errortxt := 'File handle variable trashed, memory corrupted!!';
+   100: errortxt := 'Disk read error';
+   101: errortxt := 'Disk write error, disk full?';
+   103: errortxt := 'File not open';
+   200: errortxt := 'Div by zero!!';
+   201: errortxt := 'Range check error';
+   203: errortxt := 'Heap overflow - not enough memory, possibly corrupted resource size?';
+   204: errortxt := 'Invalid pointer operation';
+   215: errortxt := 'Arithmetic overflow';
+   216: errortxt := 'General protection fault';
+   // BCC errors
+   99: errortxt := 'CreateWindow failed!';
+   98: errortxt := 'RegisterClass failed, while trying to create a window.';
+   84: errortxt := 'Could not fetch WinSystem directory!';
+   86: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA was not found in shell32.dll!';
+   87: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA returned an error!';
 
-  else errortxt := 'Unlisted error';
+   else errortxt := 'Unlisted error';
  end;
  errortxt := strdec(ernum) + ': ' + errortxt;
 end;
@@ -255,27 +262,27 @@ end;
 procedure BunExit;
 // Procedure called automatically on program exit.
 var ert : string;
-    ivar : dword;
+    i : dword;
 begin
  mv_EndProgram := TRUE; compressing := FALSE;
 
  // Kill the worker thread
  if compressorthreadID <> 0 then begin
   WaitForThreadTerminate(compressorthreadID, 1000);
-  ivar := KillThread(compressorthreadID);
+  i := KillThread(compressorthreadID);
   CloseHandle(compressorthreadhandle); // trying to avoid handle leaking
  end;
 
  // Destroy the views
- for ivar := 0 to high(viewdata) do begin
-  mcg_ForgetImage(@viewdata[ivar].bmpdata);
-  if viewdata[ivar].winhandu <> 0 then DestroyWindow(viewdata[ivar].winhandu);
-  viewdata[ivar].winhandu := 0;
-  if viewdata[ivar].BuffyH <> 0 then begin
-   SelectObject(viewdata[ivar].deeku, viewdata[ivar].OldBuffyH);
-   DeleteDC(viewdata[ivar].deeku);
-   DeleteObject(viewdata[ivar].BuffyH);
-   viewdata[ivar].buffyh := 0;
+ for i := 0 to high(viewdata) do begin
+  mcg_ForgetImage(@viewdata[i].bmpdata);
+  if viewdata[i].winhandu <> 0 then DestroyWindow(viewdata[i].winhandu);
+  viewdata[i].winhandu := 0;
+  if viewdata[i].BuffyH <> 0 then begin
+   SelectObject(viewdata[i].deeku, viewdata[i].OldBuffyH);
+   DeleteDC(viewdata[i].deeku);
+   DeleteObject(viewdata[i].BuffyH);
+   viewdata[i].buffyh := 0;
   end;
  end;
  // Destroy the entertainer
@@ -330,10 +337,10 @@ begin
  for lix := 0 to option.palsize - 1 do begin
   if lix and 7 = 0 then write(lix:5,': ');
   case pe[lix].status of
-   0: write('-------- ');
-   1: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
-   2: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
-   3: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
+    0: write('-------- ');
+    1: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
+    2: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
+    3: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
   end;
   if (lix and 7 = 7) or (lix + 1 = option.palsize) then writeln;
  end;
@@ -342,15 +349,15 @@ end;
 procedure ClearPE(mini, maxi : word);
 // Sets the preset palette entries between [mini..maxi] to unassigned, and
 // makes them a uniform plain color.
-var ivar : dword;
+var i : dword;
 begin
- if mini > maxi then begin ivar := mini; mini := maxi; maxi := ivar; end;
+ if mini > maxi then begin i := mini; mini := maxi; maxi := i; end;
  if mini > high(pe) then mini := high(pe);
  if maxi > high(pe) then maxi := high(pe);
 
- for ivar := maxi downto mini do begin
-  dword(pe[ivar].colo) := dword(neutralcolor);
-  pe[ivar].status := 0;
+ for i := maxi downto mini do begin
+  dword(pe[i].colo) := dword(neutralcolor);
+  pe[i].status := 0;
  end;
 end;
 
@@ -466,7 +473,7 @@ end;
 function WriteIni(filunamu : string) : longint;
 // Stores the present settings in a file with the given filename.
 var conff : text;
-    ivar : dword;
+    i : dword;
 begin
  assign(conff, filunamu);
  filemode := 1; rewrite(conff); // write-only
@@ -493,8 +500,8 @@ begin
  writeln(conff, '### Color presets ###');
  writeln(conff, '// Use hex format RGBA (eg. C: 8020F0FF), 00 alpha is fully transparent');
  writeln(conff);
- for ivar := 0 to high(pe) do if pe[ivar].status <> 0 then
-  writeln(conff, 'C: ' + hexifycolor(pe[ivar].colo) + strhex(pe[ivar].colo.a));
+ for i := 0 to high(pe) do if pe[i].status <> 0 then
+  writeln(conff, 'C: ' + hexifycolor(pe[i].colo) + strhex(pe[i].colo.a));
  close(conff);
  WriteIni := 0;
 end;
@@ -503,7 +510,7 @@ function ReadIni(filunamu : string) : longint;
 // Tries to read the given ASCII text file, and loads configuration options
 // based on code strings. See the WriteIni function for the code definitions.
 var conff : text;
-    ivar : dword;
+    i : dword;
     slideinfo : scrollinfo;
     tux : string;
 begin
@@ -517,40 +524,42 @@ begin
   if (tux <> '') and (tux[1] <> '#') and (tux[1] <> '/') then begin
    tux := upcase(tux);
    case tux[1] of
-    'A': dword(acolor) := valhex(copy(tux, 2, length(tux) - 1));
-    'B': option.maxcontrast := valx(copy(tux, 2, length(tux) - 1)) and 1;
-    'D': option.dithering := valx(copy(tux, 2, length(tux) - 1));
-    'F': option.flat_favor := valx(copy(tux, 2, length(tux) - 1)) and 1;
-    'S': option.colorspace := valx(copy(tux, 2, length(tux) - 1));
-    'P': begin
-          option.palsize := valx(copy(tux, 2, length(tux) - 1));
-          // Normally we cap palsize at 256, but the user can override to up
-          // to 65536 colors by writing it into a configuration file.
-          if option.palsize < 2 then option.palsize := 2;
-          if option.palsize > 256 then setlength(pe, 65536) else setlength(pe, 256);
-          pe_used := 0;
-          // The interface sliders must be reinitialised.
-          slideinfo.cbSize := sizeof(slideinfo);
-          slideinfo.fMask := SIF_ALL;
-          slideinfo.nMin := 0;
-          slideinfo.nMax := high(pe);
-          slideinfo.nPage := 8;
-          slideinfo.nPos := 0;
-          SetScrollInfo(mv_SliderH[1], SB_CTL, @slideinfo, TRUE);
-          slideinfo.nMin := 2;
-          slideinfo.nPos := option.palsize;
-          slideinfo.nPage := length(pe) shr 4;
-          slideinfo.nMax := dword(length(pe)) + slideinfo.nPage - 1;
-          SetScrollInfo(mv_SliderH[2], SB_CTL, @slideinfo, TRUE);
-          // And the preset colors need to be reset.
-          ClearPE(0, $FFFF);
-         end;
-    'C': begin
-          ivar := valhex(copy(tux, 2, length(tux) - 1));
-          dword(pe[pe_used].colo) := (ivar shr 8) or (ivar shl 24);
-          pe[pe_used].status := 2;
-          pe_used := (pe_used + 1) mod dword(length(pe));
-         end;
+     'A': dword(acolor) := valhex(copy(tux, 2, length(tux) - 1));
+     'B': option.maxcontrast := valx(copy(tux, 2, length(tux) - 1)) and 1;
+     'D': option.dithering := valx(copy(tux, 2, length(tux) - 1));
+     'F': option.flat_favor := valx(copy(tux, 2, length(tux) - 1)) and 1;
+     'S': option.colorspace := valx(copy(tux, 2, length(tux) - 1));
+     'P':
+     begin
+      option.palsize := valx(copy(tux, 2, length(tux) - 1));
+      // Normally we cap palsize at 256, but the user can override to up
+      // to 65536 colors by writing it into a configuration file.
+      if option.palsize < 2 then option.palsize := 2;
+      if option.palsize > 256 then setlength(pe, 65536) else setlength(pe, 256);
+      pe_used := 0;
+      // The interface sliders must be reinitialised.
+      slideinfo.cbSize := sizeof(slideinfo);
+      slideinfo.fMask := SIF_ALL;
+      slideinfo.nMin := 0;
+      slideinfo.nMax := high(pe);
+      slideinfo.nPage := 8;
+      slideinfo.nPos := 0;
+      SetScrollInfo(mv_SliderH[1], SB_CTL, @slideinfo, TRUE);
+      slideinfo.nMin := 2;
+      slideinfo.nPos := option.palsize;
+      slideinfo.nPage := length(pe) shr 4;
+      slideinfo.nMax := dword(length(pe)) + slideinfo.nPage - 1;
+      SetScrollInfo(mv_SliderH[2], SB_CTL, @slideinfo, TRUE);
+      // And the preset colors need to be reset.
+      ClearPE(0, $FFFF);
+     end;
+     'C':
+     begin
+      i := valhex(copy(tux, 2, length(tux) - 1));
+      dword(pe[pe_used].colo) := (i shr 8) or (i shl 24);
+      pe[pe_used].status := 2;
+      pe_used := (pe_used + 1) mod dword(length(pe));
+     end;
    end;
   end;
  end;
@@ -598,12 +607,12 @@ end;
 procedure BuildLabTable;
 // Precalculates the results of f(t), t = [0..65535], as used in the
 // XYZ to LAB colorspace transformation. The table is stored in LabTable[].
-var ivar : word;
+var i : word;
 begin
- for ivar := 0 to 65535 do
-  if ivar > 580
-  then LabTable[ivar] := round(power(ivar / 65535, 1/3) * 65535)
-  else LabTable[ivar] := round(841 * ivar / 108 + 9039);
+ for i := 0 to 65535 do
+  if i > 580
+  then LabTable[i] := round(power(i / 65535, 1/3) * 65535)
+  else LabTable[i] := round(841 * i / 108 + 9039);
 end;
 {$endif}
 
@@ -804,12 +813,12 @@ begin
   move(bmpdata.palette[0], whither^.palette[0], length(bmpdata.palette) * 4);
   // decide which bitdepth to pack into
   case length(bmpdata.palette) of
-   0..2: whither^.bitdepth := 1;
-   3..4: if bytealign = 1 then whither^.bitdepth := 2
-         // v4 DIBs are DWORD -aligned, and don't support 2 bpp.
-         else whither^.bitdepth := 4;
-   5..16: whither^.bitdepth := 4;
-   17..256: whither^.bitdepth := 8;
+    0..2: whither^.bitdepth := 1;
+    3..4: if bytealign = 1 then whither^.bitdepth := 2
+          // v4 DIBs are DWORD -aligned, and don't support 2 bpp.
+          else whither^.bitdepth := 4;
+    5..16: whither^.bitdepth := 4;
+    17..256: whither^.bitdepth := 8;
   end;
   // calculate various descriptive numbers
   dec(bytealign);
@@ -894,7 +903,7 @@ var newimu : bitmaptype;
     openfilurec : openfilename;
     kind, txt : string;
     filu : file;
-    ivar, jvar : dword;
+    i, j : dword;
     pingustream : pointer;
 begin
  if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
@@ -917,9 +926,9 @@ begin
  if upcase(copy(txt, length(txt) - 3, 4)) <> '.PNG' then txt := txt + '.png';
  assign(filu, txt);
  filemode := 1; rewrite(filu, 1); // write-only
- ivar := IOresult;
- if ivar <> 0 then begin
-  txt := errortxt(ivar) + chr(0);
+ i := IOresult;
+ if i <> 0 then begin
+  txt := errortxt(i) + chr(0);
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
 
@@ -930,18 +939,18 @@ begin
 
  // Render the image into a compressed PNG
  pingustream := NIL;
- ivar := mcg_MemorytoPNG(@newimu, @pingustream, @jvar);
- if ivar <> 0 then begin
+ i := mcg_MemorytoPNG(@newimu, @pingustream, @j);
+ if i <> 0 then begin
   mcg_ForgetImage(@newimu);
   txt := mcg_errortxt + chr(0);
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
 
  // Write the PNG datastream into the file
- blockwrite(filu, pingustream^, jvar);
- ivar := IOresult;
- if ivar <> 0 then begin
-  txt := errortxt(ivar) + chr(0);
+ blockwrite(filu, pingustream^, j);
+ i := IOresult;
+ if i <> 0 then begin
+  txt := errortxt(i) + chr(0);
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
  end;
 
@@ -1117,212 +1126,230 @@ begin
  winpo := GetWindowLong(window, GWL_USERDATA);
 
  case amex of
-  wm_Create: if winpo = 0 then begin
-              EnableWindow(mv_ButtonH[4], TRUE); // the Compress-button
-             end;
-  // Copy stuff to screen from our own buffer
-  wm_Paint: begin
-             mv_DC := beginPaint (window, @mv_PS);
-             with viewdata[winpo] do begin
-              if bmpdata.sizex * zoom <= winsizex then begin
-               rrd.left := (winsizex - bmpdata.sizex * zoom) shr 1;
-               rrd.right := bmpdata.sizex * zoom;
-               rrs.left := 0;
-               rrs.right := bmpdata.sizex;
-              end else begin
-               rrd.left := -viewofsx mod zoom;
-               rrd.right := winsizex - (winsizex mod zoom) + zoom;
-               rrs.left := viewofsx div zoom;
-               rrs.right := (winsizex div zoom) + 1;
-              end;
-              if bmpdata.sizey * zoom <= winsizey then begin
-               rrd.top := (winsizey - bmpdata.sizey * zoom) shr 1;
-               rrd.bottom := bmpdata.sizey * zoom;
-               rrs.top := 0;
-               rrs.bottom := bmpdata.sizey;
-              end else begin
-               rrd.top := -viewofsy mod zoom;
-               rrd.bottom := winsizey - (winsizey mod zoom) + zoom;
-               rrs.top := viewofsy div zoom;
-               rrs.bottom := (winsizey div zoom) + 1;
-              end;
-             end;
-             StretchBlt (mv_DC,
-                    rrd.left, rrd.top, rrd.right, rrd.bottom,
-                    viewdata[winpo].deeku,
-                    rrs.left, rrs.top, rrs.right, rrs.bottom,
-                    SRCCOPY);
-             endPaint (window, mv_PS);
-            end;
-  // Resizing
-  wm_Size: with viewdata[winpo] do begin
-            // read the new window size
-            winsizex := word(lapu);
-            winsizey := lapu shr 16;
-            // adjust the view offset
-            if winsizex > bmpdata.sizex * zoom then
-             viewofsx := -((winsizex - bmpdata.sizex * zoom) shr 1)
-            else if viewofsx > bmpdata.sizex * zoom - winsizex then
-             viewofsx := bmpdata.sizex * zoom - winsizex
-            else if viewofsx < 0 then viewofsx := 0;
-            if winsizey > bmpdata.sizey * zoom then
-             viewofsy := -((winsizey - bmpdata.sizey * zoom) shr 1)
-            else if viewofsy > bmpdata.sizey * zoom - winsizey then
-             viewofsy := bmpdata.sizey * zoom - winsizey
-            else if viewofsy < 0 then viewofsy := 0;
-            invalidaterect(window, NIL, TRUE);
-           end;
+   // the Compress-button
+   wm_Create: if winpo = 0 then EnableWindow(mv_ButtonH[4], TRUE);
 
-  // Losing or gaining window focus
-  wm_Activate: begin
-   if wepu and $FFFF = WA_INACTIVE then begin
-    if mousescrolling then begin
-     ReleaseCapture;
-     mousescrolling := FALSE;
+   // Copy stuff to screen from our own buffer
+   wm_Paint:
+   begin
+    mv_DC := beginPaint (window, @mv_PS);
+    with viewdata[winpo] do begin
+     if bmpdata.sizex * zoom <= winsizex then begin
+      rrd.left := (winsizex - bmpdata.sizex * zoom) shr 1;
+      rrd.right := bmpdata.sizex * zoom;
+      rrs.left := 0;
+      rrs.right := bmpdata.sizex;
+     end else begin
+      rrd.left := -viewofsx mod zoom;
+      rrd.right := winsizex - (winsizex mod zoom) + zoom;
+      rrs.left := viewofsx div zoom;
+      rrs.right := (winsizex div zoom) + 1;
+     end;
+     if bmpdata.sizey * zoom <= winsizey then begin
+      rrd.top := (winsizey - bmpdata.sizey * zoom) shr 1;
+      rrd.bottom := bmpdata.sizey * zoom;
+      rrs.top := 0;
+      rrs.bottom := bmpdata.sizey;
+     end else begin
+      rrd.top := -viewofsy mod zoom;
+      rrd.bottom := winsizey - (winsizey mod zoom) + zoom;
+      rrs.top := viewofsy div zoom;
+      rrs.bottom := (winsizey div zoom) + 1;
+     end;
     end;
+    StretchBlt (mv_DC,
+      rrd.left, rrd.top, rrd.right, rrd.bottom,
+      viewdata[winpo].deeku,
+      rrs.left, rrs.top, rrs.right, rrs.bottom,
+      SRCCOPY);
+    endPaint (window, mv_PS);
+   end;
+
+   // Resizing
+   wm_Size:
+   with viewdata[winpo] do begin
+    // read the new window size
+    winsizex := word(lapu);
+    winsizey := lapu shr 16;
+    // adjust the view offset
+    if winsizex > bmpdata.sizex * zoom then
+     viewofsx := -((winsizex - bmpdata.sizex * zoom) shr 1)
+    else if viewofsx > bmpdata.sizex * zoom - winsizex then
+     viewofsx := bmpdata.sizex * zoom - winsizex
+    else if viewofsx < 0 then
+     viewofsx := 0;
+    if winsizey > bmpdata.sizey * zoom then
+     viewofsy := -((winsizey - bmpdata.sizey * zoom) shr 1)
+    else if viewofsy > bmpdata.sizey * zoom - winsizey then
+     viewofsy := bmpdata.sizey * zoom - winsizey
+    else if viewofsy < 0 then
+     viewofsy := 0;
+    invalidaterect(window, NIL, TRUE);
+   end;
+
+   // Losing or gaining window focus
+   wm_Activate:
+   begin
+    if wepu and $FFFF = WA_INACTIVE then begin
+     if mousescrolling then begin
+      ReleaseCapture;
+      mousescrolling := FALSE;
+     end;
+    end else
+     lastactiveview := winpo;
+    // do the default action too, why not
+    ViewProc := DefWindowProc(Window, AMex, wepu, lapu);
+   end;
+
+   // Mouse stuff
+   wm_MouseMove:
+   if mousescrolling = FALSE then begin
+    // If color picking is toggled, refresh the color selection
+    if colorpicking then with viewdata[winpo] do begin
+     rrs.left := (viewofsx + integer(lapu and $FFFF)) div zoom;
+     rrs.top := (viewofsy + integer(lapu shr 16)) div zoom;
+     if (rrs.left >= 0) and (rrs.left < bmpdata.sizex)
+     and (rrs.top >= 0) and (rrs.top < bmpdata.sizey)
+     then begin
+      pico := fetchpixel(winpo, rrs.left, rrs.top);
+      kind := hexifycolor(pico) + chr(0);
+      SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
+      kind := hextable[pico.a shr 4] + hextable[pico.a and $F] + chr(0);
+      SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
+      EnableWindow(mv_ButtonH[3], TRUE);
+      InvalidateRect(mv_ColorBlockH, NIL, TRUE);
+      // check for palette hits
+      wepu := 0;
+      for lapu := 0 to high(pe) do
+       if dword(pe[lapu].colo) = dword(pico) then inc(wepu);
+      if wepu = 0 then ShowWindow(mv_StaticH[7], SW_HIDE)
+       else ShowWindow(mv_StaticH[7], SW_SHOW);
+     end;
+    end
+    // If left button pressed, start mousescrolling
+    else if wepu and MK_LBUTTON <> 0 then begin
+     SetCapture(window);
+     mousescrolling := TRUE;
+     mousescrollx := lapu and $FFFF;
+     mousescrolly := lapu shr 16;
+    end;
+   end
+
+   // Mouse scrolling
+   else with viewdata[winpo] do begin
+    rrd.left := mousescrollx - integer(lapu and $FFFF);
+    rrd.top := mousescrolly - integer(lapu shr 16);
+    mousescrollx := integer(lapu and $FFFF);
+    mousescrolly := integer(lapu shr 16);
+
+    // images smaller than winsize can't be scrolled
+    if bmpdata.sizex * zoom <= winsizex then rrd.left := 0;
+    if bmpdata.sizey * zoom <= winsizey then rrd.top := 0;
+    if (rrd.left or rrd.top) <> 0 then begin
+     // can't scroll view beyond edges
+     if viewofsx + rrd.left <= 0 then
+      rrd.left := -viewofsx
+     else if dword(viewofsx + rrd.left + winsizex) >= bmpdata.sizex * zoom then
+      rrd.left := bmpdata.sizex * zoom - winsizex - viewofsx;
+     if viewofsy + rrd.top <= 0 then
+      rrd.top := -viewofsy
+     else if dword(viewofsy + rrd.top + winsizey) >= bmpdata.sizey * zoom then
+      rrd.top := bmpdata.sizey * zoom - winsizey - viewofsy;
+
+     if (rrd.left or rrd.top) <> 0 then begin
+      inc(viewofsx, rrd.left);
+      inc(viewofsy, rrd.top);
+      invalidaterect(window, NIL, FALSE);
+     end;
+    end;
+   end;
+
+   wm_LButtonUp:
+   if colorpicking then begin
+    colorpicking := FALSE;
+    SendMessageA(mv_ButtonH[1], BM_SETCHECK, BST_UNCHECKED, 0);
+    ShowWindow(mv_StaticH[7], SW_HIDE);
    end else
-    lastactiveview := winpo;
-   // do the default action too, why not
-   ViewProc := DefWindowProc(Window, AMex, wepu, lapu);
-  end;
+   if mousescrolling then begin
+    ReleaseCapture;
+    mousescrolling := FALSE;
+   end;
 
-  // Mouse stuff
-  wm_MouseMove: if mousescrolling = FALSE then begin
-                 // If color picking is toggled, refresh the color selection
-                 if colorpicking then with viewdata[winpo] do begin
-                  rrs.left := (viewofsx + integer(lapu and $FFFF)) div zoom;
-                  rrs.top := (viewofsy + integer(lapu shr 16)) div zoom;
-                  if (rrs.left >= 0) and (rrs.left < bmpdata.sizex)
-                  and (rrs.top >= 0) and (rrs.top < bmpdata.sizey)
-                  then begin
-                   pico := fetchpixel(winpo, rrs.left, rrs.top);
-                   kind := hexifycolor(pico) + chr(0);
-                   SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-                   kind := hextable[pico.a shr 4] + hextable[pico.a and $F] + chr(0);
-                   SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
-                   EnableWindow(mv_ButtonH[3], TRUE);
-                   InvalidateRect(mv_ColorBlockH, NIL, TRUE);
-                   // check for palette hits
-                   wepu := 0;
-                   for lapu := 0 to high(pe) do
-                    if dword(pe[lapu].colo) = dword(pico) then inc(wepu);
-                   if wepu = 0 then ShowWindow(mv_StaticH[7], SW_HIDE)
-                   else ShowWindow(mv_StaticH[7], SW_SHOW);
-                  end;
-                 end else
-                 // If left button pressed, start mousescrolling
-                 if wepu and MK_LBUTTON <> 0 then begin
-                  SetCapture(window);
-                  mousescrolling := TRUE;
-                  mousescrollx := lapu and $FFFF;
-                  mousescrolly := lapu shr 16;
-                 end;
-                end
-
-                // Mouse scrolling
-                else with viewdata[winpo] do begin
-                 rrd.left := mousescrollx - integer(lapu and $FFFF);
-                 rrd.top := mousescrolly - integer(lapu shr 16);
-                 mousescrollx := integer(lapu and $FFFF);
-                 mousescrolly := integer(lapu shr 16);
-
-                 // images smaller than winsize can't be scrolled
-                 if bmpdata.sizex * zoom <= winsizex then rrd.left := 0;
-                 if bmpdata.sizey * zoom <= winsizey then rrd.top := 0;
-                 if (rrd.left or rrd.top) <> 0 then begin
-                  // can't scroll view beyond edges
-                  if viewofsx + rrd.left <= 0 then rrd.left := -viewofsx else
-                  if dword(viewofsx + rrd.left + winsizex) >= bmpdata.sizex * zoom then rrd.left := bmpdata.sizex * zoom - winsizex - viewofsx;
-                  if viewofsy + rrd.top <= 0 then rrd.top := -viewofsy else
-                  if dword(viewofsy + rrd.top + winsizey) >= bmpdata.sizey * zoom then rrd.top := bmpdata.sizey * zoom - winsizey - viewofsy;
-
-                  if (rrd.left or rrd.top) <> 0 then begin
-                   inc(viewofsx, rrd.left);
-                   inc(viewofsy, rrd.top);
-                   invalidaterect(window, NIL, FALSE);
-                  end;
-                 end;
-                end;
-
-  wm_LButtonUp:
-  if colorpicking then begin
-   colorpicking := FALSE;
-   SendMessageA(mv_ButtonH[1], BM_SETCHECK, BST_UNCHECKED, 0);
-   ShowWindow(mv_StaticH[7], SW_HIDE);
-  end else
-  if mousescrolling then begin
-   ReleaseCapture;
-   mousescrolling := FALSE;
-  end;
-
-  wm_MouseWheel: begin
+   wm_MouseWheel:
    if integer(wepu shr 16) < 0 then ZoomOut(window, winpo)
    else ZoomIn(window, winpo);
-  end;
 
-  // Right-click menu popup
-  wm_ContextMenu: begin
-                   if mousescrolling then begin
-                    ReleaseCapture; mousescrolling := FALSE;
-                   end;
-                   kind := 'Import palette ' + chr(8) + '(CTRL+M)' + chr(0);
-                   // If the view image has more distinct colors than the
-                   // maximum palette size, disable palette importing
-                   wepu := MF_BYPOSITION;
-                   if length(viewdata[winpo].bmpdata.palette) > length(pe) then
-                    wepu := wepu or MF_GRAYED;
-                   ModifyMenu(mv_ContextMenu, 2, wepu, 96, @kind[1]);
-                   TrackPopupMenu(mv_ContextMenu, TPM_LEFTALIGN, lapu and $FFFF, lapu shr 16, 0, window, NIL);
-                  end;
+   // Right-click menu popup
+   wm_ContextMenu:
+   begin
+    if mousescrolling then begin
+     ReleaseCapture; mousescrolling := FALSE;
+    end;
+    kind := 'Import palette ' + chr(8) + '(CTRL+M)' + chr(0);
+    // If the view image has more distinct colors than the maximum palette
+    // palette size, disable palette importing.
+    wepu := MF_BYPOSITION;
+    if length(viewdata[winpo].bmpdata.palette) > length(pe) then
+     wepu := wepu or MF_GRAYED;
+    ModifyMenu(mv_ContextMenu, 2, wepu, 96, @kind[1]);
+    TrackPopupMenu(mv_ContextMenu, TPM_LEFTALIGN, lapu and $FFFF, lapu shr 16, 0, window, NIL);
+   end;
 
-  wm_Command:
-  case wepu of
-    91: SaveViewAsPNG(winpo);
-    94: CopyView(winpo);
-    96: ImportPalette(winpo);
-  end;
+   wm_Command:
+   case wepu of
+     91: SaveViewAsPNG(winpo);
+     94: CopyView(winpo);
+     96: ImportPalette(winpo);
+   end;
 
-  // Keypresses
-  wm_Char: begin
-            case wepu of
-             27: if colorpicking then begin
-                  colorpicking := FALSE;
-                  SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                  ShowWindow(mv_StaticH[7], SW_HIDE);
-                 end;
-             ord('+'): ZoomIn(window, winpo);
-             ord('-'): ZoomOut(window, winpo);
-            end;
-           end;
+   // Keypresses
+   wm_Char:
+   begin
+    case wepu of
+      27:
+      if colorpicking then begin
+       colorpicking := FALSE;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+      end;
+      ord('+'): ZoomIn(window, winpo);
+      ord('-'): ZoomOut(window, winpo);
+    end;
+   end;
 
-  // Closing down
-  // Non-source views can be closed at any time; a source view may only be
-  // closed if color compression is not ongoing.
-  wm_Close: if (winpo <> 0) or (compressorthreadID = 0)
-            then DestroyWindow(window);
+   // Closing down
+   // Non-source views can be closed at any time; a source view may only be
+   // closed if color compression is not ongoing.
+   wm_Close:
+   if (winpo <> 0) or (compressorthreadID = 0) then
+    DestroyWindow(window);
 
-  wm_Destroy: begin
-               if lastactiveview = winpo then lastactiveview := $FF;
-               // Clean the variables
-               if viewdata[winpo].winhandu <> 0 then viewdata[winpo].winhandu := 0;
-               if viewdata[winpo].BuffyH <> 0 then begin
-                SelectObject(viewdata[winpo].deeku, viewdata[winpo].OldBuffyH);
-                DeleteDC(viewdata[winpo].deeku);
-                DeleteObject(viewdata[winpo].BuffyH);
-                viewdata[winpo].buffyh := 0;
-               end;
-               mcg_ForgetImage(@viewdata[winpo].bmpdata);
-               // If the source view is closed, disable the Compress-button
-               if winpo = 0 then EnableWindow(mv_ButtonH[4], FALSE);
-               SetForegroundWindow(mv_MainWinH);
-               colorpicking := FALSE;
-               SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-               ShowWindow(mv_StaticH[7], SW_HIDE);
-               // If all views are closed, disable the From Image button
-               for winpo := 0 to high(viewdata) do if viewdata[winpo].buffyh <> 0 then exit;
-               EnableWindow(mv_ButtonH[1], FALSE);
-              end;
-  else ViewProc := DefWindowProc(Window, AMex, wepu, lapu);
+   wm_Destroy:
+   begin
+    if lastactiveview = winpo then lastactiveview := $FF;
+    // Clean the variables.
+    if viewdata[winpo].winhandu <> 0 then viewdata[winpo].winhandu := 0;
+    if viewdata[winpo].BuffyH <> 0 then begin
+     SelectObject(viewdata[winpo].deeku, viewdata[winpo].OldBuffyH);
+     DeleteDC(viewdata[winpo].deeku);
+     DeleteObject(viewdata[winpo].BuffyH);
+     viewdata[winpo].buffyh := 0;
+    end;
+    mcg_ForgetImage(@viewdata[winpo].bmpdata);
+    // If the source view is closed, disable the Compress-button.
+    if winpo = 0 then EnableWindow(mv_ButtonH[4], FALSE);
+    SetForegroundWindow(mv_MainWinH);
+    colorpicking := FALSE;
+    SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+    ShowWindow(mv_StaticH[7], SW_HIDE);
+    // If all views are closed, disable the From Image button
+    for winpo := 0 to high(viewdata) do
+     if viewdata[winpo].buffyh <> 0 then exit;
+    EnableWindow(mv_ButtonH[1], FALSE);
+   end;
+
+   // Default handler for every other message.
+   else ViewProc := DefWindowProc(Window, AMex, wepu, lapu);
  end;
 end;
 
@@ -1434,7 +1461,7 @@ begin
 
  if numflats = 0 then exit;
 
- // Sort the list (teleporting gnome sort)
+ // Sort the list (teleporting gnome sort).
  cmpd1 := 0; cmpd2 := $FFFFFFFF;
  while cmpd1 < numflats do begin
   if (cmpd1 = 0) or (flats[cmpd1].weight <= flats[cmpd1 - 1].weight)
@@ -1449,24 +1476,24 @@ begin
   end;
  end;
 
- // Penalise near-matches on the flats list
+ // Penalise near-matches on the flats list.
  cmpd1 := 0;
  repeat
   cmpd2 := cmpd1 + 1;
   while cmpd2 < numflats do begin
    cmpd3 := diffRGB(mcg_GammaInput(flats[cmpd1].color), mcg_GammaInput(flats[cmpd2].color));
    case cmpd3 of
-    0..15: match := 10;
-    16..63: match := 9;
-    64..255: match := 8;
-    256..1023: match := 7;
-    1024..4095: match := 6;
-    4096..16383: match := 5;
-    16384..65535: match := 4;
-    65536..262143: match := 3;
-    262144..1048575: match := 2;
-    1048576..4194303: match := 1;
-    else match := 0;
+     0..15: match := 10;
+     16..63: match := 9;
+     64..255: match := 8;
+     256..1023: match := 7;
+     1024..4095: match := 6;
+     4096..16383: match := 5;
+     16384..65535: match := 4;
+     65536..262143: match := 3;
+     262144..1048575: match := 2;
+     1048576..4194303: match := 1;
+     else match := 0;
    end;
    flats[cmpd2].weight := flats[cmpd2].weight shr match + 1;
    inc(cmpd2);
@@ -1474,7 +1501,7 @@ begin
   inc(cmpd1);
  until cmpd1 >= numflats;
 
- // Sort the list again
+ // Sort the list again.
  cmpd1 := 0; cmpd2 := $FFFFFFFF;
  while cmpd1 < numflats do begin
   if (cmpd1 = 0) or (flats[cmpd1].weight <= flats[cmpd1 - 1].weight)
@@ -1489,7 +1516,7 @@ begin
   end;
  end;
 
- // Filter the noise off the flats list
+ // Filter the noise off the flats list.
  cmpd1 := 0; cmpd2 := numflats;
  while cmpd2 <> 0 do begin
   dec(cmpd2);
@@ -1502,11 +1529,12 @@ begin
  //writeln('sum weight = ',cmpd1,'  ^.333 = ',cmpd2,'  noise floor = ',cmpd3,' (currently ',numflats,' flats)');
  // Every flat on the list has its weight decreased by this amount.
  for cmpd1 := numflats - 1 downto 0 do
-  if flats[cmpd1].weight <= cmpd3
-  then flats[cmpd1].weight := 0
-  else dec(flats[cmpd1].weight, cmpd3);
+  if flats[cmpd1].weight <= cmpd3 then
+   flats[cmpd1].weight := 0
+  else
+   dec(flats[cmpd1].weight, cmpd3);
 
- // Crop the list at the far end, all flats of 0 weight must go
+ // Crop the list at the far end, all flats of 0 weight must go.
  while (numflats > 1) and (flats[numflats - 1].weight = 0) do dec(numflats);
 
  //for cmpd1 := 0 to numflats - 1 do
@@ -1518,7 +1546,7 @@ procedure MakeHistogram(sr : byte);
 // Fills the viewdata[sr].bmpdata.palette array with a series of RGBA dwords,
 // one for each unique color present in the image.
 // Uses dynamic array hashing.
-var iofs, hvar, ivar, jvar, gramsize : dword;
+var iofs, hvar, i, j, gramsize : dword;
     hash : array[0..4095] of array of dword;
     bucketitems : array[0..4095] of dword;
     bitmask : dword;
@@ -1533,7 +1561,7 @@ begin
  filldword(bucketitems, 4096, 0);
 
  // Each 32-bit color (24-bit images are read as 32-bit) is read into HVAR,
- // then reduced to a 12-bit ID tag, placed in JVAR. There are 4096 hashing
+ // then reduced to a 12-bit ID tag, placed in j. There are 4096 hashing
  // buckets, and each has a dynamic array list of the actual 32-bit colors
  // encountered whose ID tag pointed to that bucket. Doing this means that
  // checking for whether a particular color is already added to the list only
@@ -1544,24 +1572,24 @@ begin
  while iofs <> 0 do begin
   dec(iofs, viewdata[sr].alpha);
   hvar := dword((viewdata[sr].bmpdata.image + iofs)^) or bitmask;
-  jvar := (hvar and $7FF) xor (hvar shr 11);
-  jvar := (jvar xor (jvar shr 11)) and $FFF;
-  if bucketitems[jvar] = 0 then begin // empty bucket? allocate space
-   setlength(hash[jvar], 64);
-   bucketitems[jvar] := 1;
-   hash[jvar][0] := hvar;
+  j := (hvar and $7FF) xor (hvar shr 11);
+  j := (j xor (j shr 11)) and $FFF;
+  if bucketitems[j] = 0 then begin // empty bucket? allocate space
+   setlength(hash[j], 64);
+   bucketitems[j] := 1;
+   hash[j][0] := hvar;
    inc(gramsize);
   end else begin // non-empty bucket; check for a match among listed colors
    existence := FALSE;
-   ivar := bucketitems[jvar];
-   while ivar <> 0 do begin
-    dec(ivar);
-    if hash[jvar][ivar] = hvar then begin existence := TRUE; break; end;
+   i := bucketitems[j];
+   while i <> 0 do begin
+    dec(i);
+    if hash[j][i] = hvar then begin existence := TRUE; break; end;
    end;
    if existence = FALSE then begin // no match exists! add new to bucket
-    if bucketitems[jvar] = dword(length(hash[jvar])) then setlength(hash[jvar], length(hash[jvar]) + 64);
-    hash[jvar][bucketitems[jvar]] := hvar;
-    inc(bucketitems[jvar]);
+    if bucketitems[j] = dword(length(hash[j])) then setlength(hash[j], length(hash[j]) + 64);
+    hash[j][bucketitems[j]] := hvar;
+    inc(bucketitems[j]);
     inc(gramsize);
    end;
   end;
@@ -1575,8 +1603,8 @@ begin
  while iofs <> 0 do begin
   dec(iofs);
   if bucketitems[iofs] <> 0 then begin
-   for ivar := 0 to bucketitems[iofs] - 1 do begin
-    dword(viewdata[sr].bmpdata.palette[hvar]) := hash[iofs][ivar];
+   for i := 0 to bucketitems[iofs] - 1 do begin
+    dword(viewdata[sr].bmpdata.palette[hvar]) := hash[iofs][i];
     inc(hvar);
    end;
   end;
@@ -1585,8 +1613,7 @@ end;
 
 procedure RedrawView(sr : byte);
 // Renders the raw bitmap into a buffer that the system can display.
-var
-    acolorg : RGBA64;
+var acolorg : RGBA64;
     sofs, dofs : dword;
     aval : byte;
 begin
@@ -1601,6 +1628,7 @@ begin
 
   sofs := bmpdata.sizex * bmpdata.sizey;
   // 24-bit RGB rendering
+  {$note TODO: These should use direct ptr access}
   if alpha = 3 then begin
    dofs := sofs * 4;
    sofs := sofs * 3;
@@ -1610,8 +1638,8 @@ begin
     byte((buffy + dofs + 3)^) := 0; // alpha, zeroed
    end;
   end
-  // 32-bit RGBA rendering, alpha rendering using RGBquad "acolor"
-  // Alpha is calculated linearry in a gamma-adjusted colorspace
+  // 32-bit RGBA rendering, alpha rendering using RGBquad "acolor".
+  // Alpha is calculated linearry in a gamma-adjusted colorspace.
   else begin
    sofs := sofs * 4;
    while sofs <> 0 do begin
@@ -1717,78 +1745,78 @@ end;
 
 // Working variables
 var wgram : array of packed record
-             color : RGBA64;
-             pal : word;
-            end;
-    dithertab : array of packed record
-                 pal1, pal2 : word;
-                 mix : byte;
-                end;
-    offenders : array of packed record
-     who : dword; // wgram index of biggest error mapped to its palette entry
-     what : dword; // magnitude of deviation
+      color : RGBA64;
+      pal : word;
     end;
-    palusize, faktor : word;
+    dithertab : array of packed record
+      pal1, pal2 : word;
+      mix : byte;
+    end;
+    offenders : array of packed record
+      who : dword; // wgram index of biggest error mapped to its pal entry
+      what : dword; // magnitude of deviation
+    end;
     totalerror, lasttotalerror : qword;
+    palusize, faktor : word;
 
 procedure Error_Calc;
 // Map every histogram color to a palette entry. Each mapping has a degree of
 // error between the palette color and the real color. Each real color with
 // the greatest deviation from the palette entry it is mapped to, is stored
 // in the OFFENDERS list.
-var ivar, jvar, kvar, lvar : dword;
+var i, j, k, l : dword;
 begin
  filldword(offenders[0].who, faktor * 2, 0);
- for ivar := high(wgram) downto 0 do begin
+ for i := high(wgram) downto 0 do begin
   // map wgram to palette
-  kvar := $FFFFFFFF; // kvar will be the lowest difference
-  for jvar := high(pe) downto 0 do
-  if pe[jvar].status <> 0 then begin
-   lvar := diff(pe[jvar].colog, wgram[ivar].color);
-   if lvar < kvar then begin
-    kvar := lvar; wgram[ivar].pal := jvar; // new 1st place holder
+  k := $FFFFFFFF; // k will be the lowest difference
+  for j := high(pe) downto 0 do
+  if pe[j].status <> 0 then begin
+   l := diff(pe[j].colog, wgram[i].color);
+   if l < k then begin
+    k := l; wgram[i].pal := j; // new 1st place holder
    end;
   end;
-  // The wgram color [ivar] has been mapped to a palette entry, on deviation
-  // KVAR. The next closest palette entry had deviation MVAR.
+  // The wgram color [i] has been mapped to a palette entry, on deviation
+  // k. The next closest palette entry had deviation MVAR.
 
   // During this pass, FAKTOR new palette entries will be made. Therefore,
   // keep a FAKTOR-length list "OFFENDERS" about the biggest color deviates.
   // OFFENDERS[0..faktor - 1] is ordered from smallest to greatest deviation.
-  if kvar > offenders[0].what then begin
+  if k > offenders[0].what then begin
    if offenders[faktor - 1].what = 0 then begin
-    offenders[faktor - 1].what := kvar; offenders[faktor - 1].who := ivar;
+    offenders[faktor - 1].what := k; offenders[faktor - 1].who := i;
    end else begin
-    // scan from the top of the list until same palette or lower error found
-    jvar := faktor; lvar := 0;
-    while jvar <> 0 do begin
-     dec(jvar);
-     if wgram[offenders[jvar].who].pal = wgram[ivar].pal then begin lvar := 1; break; end;
-     if offenders[jvar].what < kvar then begin lvar := 2; break; end;
+    // Scan from the top of the list until same palette or lower error found.
+    j := faktor; l := 0;
+    while j <> 0 do begin
+     dec(j);
+     if wgram[offenders[j].who].pal = wgram[i].pal then begin l := 1; break; end;
+     if offenders[j].what < k then begin l := 2; break; end;
     end;
-    if lvar = 1 then begin // same palette was encountered!
+    if l = 1 then begin // same palette was encountered!
      // if the existing offender, mapped to the same palette, has less error
      // than the new one, the old can be overwritten by the new. Otherwise
      // the new one can be scrapped right out.
-     if offenders[jvar].what < kvar then begin
-      offenders[jvar].what := kvar; offenders[jvar].who := ivar;
+     if offenders[j].what < k then begin
+      offenders[j].what := k; offenders[j].who := i;
      end;
-    end else begin // lower error was encountered at offenders[jvar].what!
-     // scan down from jvar to 0 to see if the same palette is somewhere
+    end else begin // lower error was encountered at offenders[j].what!
+     // scan down from j to 0 to see if the same palette is somewhere
      // there... if it is, it gets bumped out and everything between it and
-     // jvar is shifted down by one slot. If it is not, then everything
-     // between 0 and jvar is shifted down by one slot.
-     lvar := jvar;
-     while lvar <> 0 do begin
-      dec(lvar);
-      if offenders[lvar].who = ivar then break;
+     // j is shifted down by one slot. If it is not, then everything
+     // between 0 and j is shifted down by one slot.
+     l := j;
+     while l <> 0 do begin
+      dec(l);
+      if offenders[l].who = i then break;
      end;
-     while lvar < jvar do begin
-      offenders[lvar].who := offenders[lvar + 1].who;
-      offenders[lvar].what := offenders[lvar + 1].what;
-      inc(lvar);
+     while l < j do begin
+      offenders[l].who := offenders[l + 1].who;
+      offenders[l].what := offenders[l + 1].what;
+      inc(l);
      end;
-     offenders[jvar].who := ivar; offenders[jvar].what := kvar;
+     offenders[j].who := i; offenders[j].what := k;
     end;
    end;
   end;
@@ -1798,20 +1826,20 @@ begin
  // two high-deviation colors may be right next to each other, but on
  // different sides of a palette-mapping boundary. In such cases, scrap the
  // one that is lower on the list.
- ivar := faktor;
- while ivar > 1 do begin
-  dec(ivar);
-  jvar := ivar;
-  while jvar <> 0 do begin
-   dec(jvar);
-   if diff(wgram[offenders[ivar].who].color, wgram[offenders[jvar].who].color)
-    < offenders[jvar].what
+ i := faktor;
+ while i > 1 do begin
+  dec(i);
+  j := i;
+  while j <> 0 do begin
+   dec(j);
+   if diff(wgram[offenders[i].who].color, wgram[offenders[j].who].color)
+    < offenders[j].what
    then begin
-    for kvar := jvar to faktor - 2 do begin
-     offenders[kvar].who := offenders[kvar + 1].who;
-     offenders[kvar].what := offenders[kvar + 1].what;
+    for k := j to faktor - 2 do begin
+     offenders[k].who := offenders[k + 1].who;
+     offenders[k].what := offenders[k + 1].what;
     end;
-    dec(ivar); dec(faktor);
+    dec(i); dec(faktor);
    end;
   end;
  end;
@@ -1827,52 +1855,53 @@ procedure Mean_Reloc;
 // palette color to everything mapped to it. As the palette entries shift
 // around, some wgram colors get remapped.
 // Mean relocation is repeated until hardly any remapping occurs.
-var ivar, jvar, kvar, lvar, wptr, remapped : dword;
+var i, j, k, l, wptr, remapped : dword;
 begin
  repeat
   totalerror := 0; remapped := 0;
-  for ivar := high(pe) downto 0 do filldword(pe[ivar].rstack, 9, 0);
+  for i := high(pe) downto 0 do filldword(pe[i].rstack, 9, 0);
 
   for wptr := high(wgram) downto 0 do begin
-   // Find the palette entry closest to each wgram color
-   jvar := $FFFFFFFF; lvar := 0;
-   for ivar := high(pe) downto 0 do if pe[ivar].status <> 0 then begin
-    kvar := diff(pe[ivar].colog, wgram[wptr].color);
-    if kvar < jvar then begin
-     jvar := kvar; lvar := ivar;
+   // Find the palette entry closest to each wgram color.
+   j := $FFFFFFFF; l := 0;
+   for i := high(pe) downto 0 do if pe[i].status <> 0 then begin
+    k := diff(pe[i].colog, wgram[wptr].color);
+    if k < j then begin
+     j := k; l := i;
     end;
    end;
-   // Add the color to the averaging stack of that palette entry
-   inc(pe[lvar].rstack, wgram[wptr].color.r);
-   inc(pe[lvar].gstack, wgram[wptr].color.g);
-   inc(pe[lvar].bstack, wgram[wptr].color.b);
-   inc(pe[lvar].astack, wgram[wptr].color.a);
-   inc(pe[lvar].matches);
-   // Track if palette mapping changed
-   if wgram[wptr].pal <> lvar then begin
-    wgram[wptr].pal := lvar;
+   // Add the color to the averaging stack of that palette entry.
+   inc(pe[l].rstack, wgram[wptr].color.r);
+   inc(pe[l].gstack, wgram[wptr].color.g);
+   inc(pe[l].bstack, wgram[wptr].color.b);
+   inc(pe[l].astack, wgram[wptr].color.a);
+   inc(pe[l].matches);
+   // Track if palette mapping changed.
+   if wgram[wptr].pal <> l then begin
+    wgram[wptr].pal := l;
     inc(remapped);
    end;
-   // Track the total error
-   inc(totalerror, jvar);
+   // Track the total error.
+   inc(totalerror, j);
   end;
 
   // For all palette entries that were set during CompressColors...
-  for ivar := high(pe) downto 0 do
-   if pe[ivar].status = 1 then
-    if pe[ivar].matches = 0 then begin
-     // If no wgram matches, release the palette entry
-     pe[ivar].status := 0;
-     dword(pe[ivar].colo) := dword(neutralcolor);
+  for i := high(pe) downto 0 do
+   if pe[i].status = 1 then
+    if pe[i].matches = 0 then begin
+     // If no wgram matches, release the palette entry.
+     pe[i].status := 0;
+     dword(pe[i].colo) := dword(neutralcolor);
      dec(palusize);
     end else begin
-     // Recenter palette entries at the average location of their mapped colors
-     jvar := pe[ivar].matches shr 1;
-     pe[ivar].colog.r := (pe[ivar].rstack + jvar) div pe[ivar].matches;
-     pe[ivar].colog.g := (pe[ivar].gstack + jvar) div pe[ivar].matches;
-     pe[ivar].colog.b := (pe[ivar].bstack + jvar) div pe[ivar].matches;
-     pe[ivar].colog.a := (pe[ivar].astack + jvar) div pe[ivar].matches;
-     pe[ivar].colo := mcg_GammaOutput(pe[ivar].colog);
+     // Recenter palette entries at the average location of their mapped
+     // colors.
+     j := pe[i].matches shr 1;
+     pe[i].colog.r := (pe[i].rstack + j) div pe[i].matches;
+     pe[i].colog.g := (pe[i].gstack + j) div pe[i].matches;
+     pe[i].colog.b := (pe[i].bstack + j) div pe[i].matches;
+     pe[i].colog.a := (pe[i].astack + j) div pe[i].matches;
+     pe[i].colo := mcg_GammaOutput(pe[i].colog);
     end;
 
   updatefun := TRUE;
@@ -1887,7 +1916,7 @@ function CompressColors(turhuus : pointer) : ptrint;
 // calculated palette and dithering.
 // The input pointer "turhuus" does not do much, but is apparently required
 // to be able to run this as a thread... :? The output ptrint too.
-var ivar, jvar, kvar, wptr : dword;
+var i, j, k, wptr : dword;
     palu : array of dword;
     palug : array of RGBA64;
     diffuselist : array of dword;
@@ -1909,71 +1938,71 @@ begin
  sleep(50);
  if compressing = FALSE then exit;
 
- // Prepare the working variables
+ // Prepare the working variables.
  setlength(palu, option.palsize);
- palusize := 0; jvar := 0;
- for ivar := high(pe) downto 0 do
-  if pe[ivar].status = 2 then begin
-   if ivar >= option.palsize then inc(jvar);
+ palusize := 0; j := 0;
+ for i := high(pe) downto 0 do
+  if pe[i].status = 2 then begin
+   if i >= option.palsize then inc(j);
    if palusize < option.palsize then begin
-    palu[palusize] := dword(pe[ivar].colo);
-    pe[ivar].colog := mcg_GammaInput(pe[ivar].colo);
+    palu[palusize] := dword(pe[i].colo);
+    pe[i].colog := mcg_GammaInput(pe[i].colo);
     inc(palusize);
    end;
   end;
- if jvar <> 0 then begin
-  wassup := 'You have ' + strdec(jvar) + ' pre-defined palette entries above the desired palette size. They may not be included in the processed image.' + chr(13) + 'Proceed anyway?' + chr(0);
-  ivar := MessageBoxA(0, @wassup[1], 'Caution' + chr(0), MB_OKCANCEL or MB_TASKMODAL);
-  if ivar = IDCANCEL then begin
+ if j <> 0 then begin
+  wassup := 'You have ' + strdec(j) + ' pre-defined palette entries above the desired palette size. They may not be included in the processed image.' + chr(13) + 'Proceed anyway?' + chr(0);
+  i := MessageBoxA(0, @wassup[1], 'Caution' + chr(0), MB_OKCANCEL or MB_TASKMODAL);
+  if i = IDCANCEL then begin
    SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
    exit;
   end;
  end;
 
- // Select the appropriate colorspace to work in
+ // Select the appropriate colorspace to work in.
  case option.colorspace of
-  1: diff := @diffYCC;
-  {$ifdef allowLAB}
-  2: begin
-      diff := @diffLAB; // this does not look pretty
-      if LabTable[0] = 0 then BuildLabTable;
-     end;
-  {$endif}
-  else diff := @diffRGB;
+   1: diff := @diffYCC;
+   {$ifdef allowLAB}
+   2: begin
+       diff := @diffLAB; // this does not look pretty
+       if LabTable[0] = 0 then BuildLabTable;
+      end;
+   {$endif}
+   else diff := @diffRGB;
  end;
 
- // Add auto-detected flat colors to presets
+ // Add auto-detected flat colors to presets.
  if (option.flat_favor <> 0) and (numflats <> 0) then begin
-  ivar := 0;
-  while (ivar < numflats) and (palusize < option.palsize) do begin
-   jvar := length(pe);
-   while jvar <> 0 do begin
-    dec(jvar);
-    if (pe[jvar].status <> 0) and (dword(pe[jvar].colo) = dword(flats[ivar].color))
+  i := 0;
+  while (i < numflats) and (palusize < option.palsize) do begin
+   j := length(pe);
+   while j <> 0 do begin
+    dec(j);
+    if (pe[j].status <> 0) and (dword(pe[j].colo) = dword(flats[i].color))
     then break;
    end;
-   if dword(pe[jvar].colo) <> dword(flats[ivar].color) then begin
-    jvar := 0;
-    while pe[jvar].status <> 0 do inc(jvar);
-    pe[jvar].status := 3;
-    pe[jvar].colo := flats[ivar].color;
-    pe[jvar].colog := mcg_GammaInput(flats[ivar].color);
-    palu[palusize] := dword(flats[ivar].color);
+   if dword(pe[j].colo) <> dword(flats[i].color) then begin
+    j := 0;
+    while pe[j].status <> 0 do inc(j);
+    pe[j].status := 3;
+    pe[j].colo := flats[i].color;
+    pe[j].colog := mcg_GammaInput(flats[i].color);
+    palu[palusize] := dword(flats[i].color);
     inc(palusize);
    end;
-   inc(ivar);
+   inc(i);
   end;
  end;
 
  // PALU now contains all preset palette entries, and all detected flats that
  // could be fit in. The values in PALU[] are 32-bit RGBA.
- // Additionally, all PE[].colo have been gamma-corrected into PE[].colog
+ // Additionally, all PE[].colo have been gamma-corrected into PE[].colog.
 
  updatefun := TRUE;
 
  if compressing = FALSE then exit;
 
- // Reserve memory
+ // Reserve memory.
  setlength(offenders, (option.palsize shr 3) + 1);
  setlength(palu, palusize);
  setlength(palug, palusize);
@@ -1991,32 +2020,32 @@ begin
  //    add the DARKCOLOR to DARKLIST, and to WGRAM instead of the real color.
  //    If the real color was a preset PALU hit, add that to WGRAM too.
 
- for ivar := high(viewdata[0].bmpdata.palette) downto 0 do begin
+ for i := high(viewdata[0].bmpdata.palette) downto 0 do begin
   // check for PALU match
   palumiss := TRUE;
-  jvar := palusize;
-  while (jvar <> 0) and (palumiss) do begin
-   dec(jvar);
-   if palu[jvar] = dword(viewdata[0].bmpdata.palette[ivar]) then palumiss := FALSE;
+  j := palusize;
+  while (j <> 0) and (palumiss) do begin
+   dec(j);
+   if palu[j] = dword(viewdata[0].bmpdata.palette[i]) then palumiss := FALSE;
   end;
   if palumiss = FALSE then begin
    // found a match! Remove that from PALU list and add it to the WorkingGRAM
    // with gamma correction
-   wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[ivar]);
+   wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[i]);
    inc(wptr);
    dec(palusize);
-   while jvar < palusize do begin
-    palu[jvar] := palu[jvar + 1];
-    inc(jvar);
+   while j < palusize do begin
+    palu[j] := palu[j + 1];
+    inc(j);
    end;
   end;
 
   // add color to wgram w/gamma
-  wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[ivar]);
+  wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[i]);
   inc(wptr);
  end;
 
- // Add remaining PALU to WGRAM
+ // Add remaining PALU to WGRAM.
  setlength(wgram, wptr + palusize);
  while palusize <> 0 do begin
   dec(palusize);
@@ -2025,67 +2054,68 @@ begin
  end;
  if compressing = FALSE then exit;
 
- // Distribute evenly around up to half of total desired palette
- // re-prep the palette array to check for double definitions
+ // Distribute evenly around up to half of total desired palette.
+ // Re-prep the palette array to check for double definitions.
  palusize := 0;
- for ivar := option.palsize - 1 downto 0 do
-  if (pe[ivar].status <> 0) then begin
-   palug[palusize] := pe[ivar].colog;
+ for i := option.palsize - 1 downto 0 do
+  if (pe[i].status <> 0) then begin
+   palug[palusize] := pe[i].colog;
    inc(palusize);
   end;
  palptr := palusize mod option.palsize;
 
  if option.palsize - palusize = 0 then goto JustRender;
 
- // initially place up to half of the free palette at evenly spaced values!
- // at minimum we must place one spot in every corner of the 3D RGB cube, or
+ // Initially place up to half of the free palette at evenly spaced values!
+ // At minimum we must place one spot in every corner of the 3D RGB cube, or
  // 8 points. Just ignore alpha at this point, it's less important than the
  // actual colors.
  // option.palsize - palusize = free slots on the palette
- // ivar = 1 --> 2^3 = 8 points to place (place only if 16+ free slots)
- //        2 --> 3^3 = 27 points to place (place only if 54+ free slots)
- //        3 --> 4^3 = 64 points to place (place only if 128+ free slots) ...
- ivar := 2;
- while (ivar * ivar * ivar) shl 1 <= option.palsize - palusize do inc(ivar);
- dec(ivar, 2);
+ // i = 1 --> 2^3 = 8 points to place (place only if 16+ free slots)
+ //     2 --> 3^3 = 27 points to place (place only if 54+ free slots)
+ //     3 --> 4^3 = 64 points to place (place only if 128+ free slots) ...
+ i := 2;
+ while (i * i * i) shl 1 <= option.palsize - palusize do inc(i);
+ dec(i, 2);
 
  // If the target palette size is too small for initial spot placement, and
  // no palette entries were predefined, then at least plop one initial one
  // right on the first pixel in the wgram. It'll get shaken to a better
  // position during mean_reloc.
- if (ivar = 0) and (palusize = 0) then begin
+ if (i = 0) and (palusize = 0) then begin
   pe[0].colog := wgram[0].color;
   pe[0].colo := mcg_GammaOutput(wgram[0].color);
   pe[0].status := 1;
   inc(palptr); inc(palusize);
  end;
 
- // place the points; check first that no point was in the preset palette
- if ivar <> 0 then begin
-  for x := 0 to ivar do
-  for y := 0 to ivar do
-  for z := 0 to ivar do begin
-   // get the next free slot in the palette...
+ // Place the points; check first that no point was in the preset palette.
+ if i <> 0 then begin
+  for x := 0 to i do
+  for y := 0 to i do
+  for z := 0 to i do begin
+   // Get the next free slot in the palette...
    while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
-   // calculate the point's color...
-   pe[palptr].colog.r := x * $FFFF div longint(ivar);
-   pe[palptr].colog.g := y * $FFFF div longint(ivar);
-   pe[palptr].colog.b := z * $FFFF div longint(ivar);
+   // Calculate the point's color...
+   pe[palptr].colog.r := x * $FFFF div longint(i);
+   pe[palptr].colog.g := y * $FFFF div longint(i);
+   pe[palptr].colog.b := z * $FFFF div longint(i);
    pe[palptr].colog.a := $FFFF;
-   // scan the preset colors for a match...
-   jvar := length(palu); palumiss := TRUE;
-   while (jvar <> 0) and (palumiss) do begin
-    dec(jvar);
-    if qword(palug[jvar]) = qword(pe[palptr].colog) then palumiss := FALSE;
+   // Scan the preset colors for a match...
+   j := length(palu); palumiss := TRUE;
+   while (j <> 0) and (palumiss) do begin
+    dec(j);
+    if qword(palug[j]) = qword(pe[palptr].colog) then palumiss := FALSE;
    end;
-   if palumiss then begin // no such color in the preset palette!
+   if palumiss then begin
+    // No such color in the preset palette!
     pe[palptr].status := 1;
     inc(palusize);
    end;
   end;
  end;
 
- // Shake the palette up a bit to start with, eliminate any matchless ones
+ // Shake the palette up a bit to start with, eliminate any matchless ones.
  sleep(50);
  if compressing = FALSE then exit;
  wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
@@ -2095,27 +2125,27 @@ begin
  // Main color compression loop!
  while (palusize < option.palsize) and (compressing) do begin
   sleep(0);
-  // calculate the number of new palette entries to set during this loop
+  // Calculate the number of new palette entries to set during this loop.
   faktor := ((option.palsize - palusize) shr 3) + 1;
   if faktor > palusize shr 1 then faktor := (palusize shr 1) + 1;
-  // map wgram to the existing palette, see where the biggest error is
+  // Map wgram to the existing palette, see where the biggest error is.
   wassup := 'Scoring deviation... (' + strdec(palusize) + ')' + chr(0);
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
   error_calc;
 
   //writeln; writeln('=== Allocating ===');
-  // no colors left to allocate, but still space in palette? Call it a day.
+  // No colors left to allocate, but still space in palette? Call it a day.
   if offenders[faktor - 1].what <= 1 then break;
-  // allocate the new palette entries in the biggest error locations
-  for ivar := faktor - 1 downto 0 do begin
+  // Allocate the new palette entries in the biggest error locations.
+  for i := faktor - 1 downto 0 do begin
    while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
-   pe[palptr].colog := wgram[offenders[ivar].who].color;
-   pe[palptr].colo := mcg_GammaOutput(wgram[offenders[ivar].who].color);
+   pe[palptr].colog := wgram[offenders[i].who].color;
+   pe[palptr].colo := mcg_GammaOutput(wgram[offenders[i].who].color);
    pe[palptr].status := 1;
    inc(palusize);
   end;
 
-  // shake the new palette to represent colors optimally
+  // Shake the new palette to represent colors optimally.
   wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
   sleep(0);
@@ -2150,31 +2180,31 @@ begin
   setlength(palu, length(pe));
   setlength(palug, length(pe));
   lasttotalerror := totalerror;
-  for ivar := high(pe) downto 0 do begin
-   palu[ivar] := dword(pe[ivar].colo);
-   palug[ivar] := pe[ivar].colog;
+  for i := high(pe) downto 0 do begin
+   palu[i] := dword(pe[i].colo);
+   palug[i] := pe[i].colog;
   end;
   writeln('Initial total error: ',totalerror);
 
-  kvar := 0; palumiss := FALSE; faktor := 1;
+  k := 0; palumiss := FALSE; faktor := 1;
   repeat
 
    // try this for all non-preset palette entries
-   ivar := option.palsize;
-   while (ivar <> 0) and (palumiss = FALSE) do begin
-    dec(ivar);
-    if kvar = ivar then palumiss := TRUE else
-    if pe[ivar].status = 1 then begin
+   i := option.palsize;
+   while (i <> 0) and (palumiss = FALSE) do begin
+    dec(i);
+    if k = i then palumiss := TRUE else
+    if pe[i].status = 1 then begin
 
      // release the palette entry
-     pe[ivar].status := 0;
+     pe[i].status := 0;
      mean_reloc;
 
      // reallocate it!
      error_calc;
-     pe[ivar].colog := wgram[offenders[0].who].color;
-     pe[ivar].colo := mcg_GammaOutput(wgram[offenders[0].who].color);
-     pe[ivar].status := 1;
+     pe[i].colog := wgram[offenders[0].who].color;
+     pe[i].colo := mcg_GammaOutput(wgram[offenders[0].who].color);
+     pe[i].status := 1;
      mean_reloc;
 
      // was it an improvement?
@@ -2182,16 +2212,16 @@ begin
       writeln(totalerror);
       // Yes! Save the new palette
       lasttotalerror := totalerror;
-      for jvar := high(pe) downto 0 do begin
-       palu[jvar] := dword(pe[jvar].colo);
-       palug[jvar] := pe[jvar].colog;
+      for j := high(pe) downto 0 do begin
+       palu[j] := dword(pe[j].colo);
+       palug[j] := pe[j].colog;
       end;
-      kvar := ivar;
+      k := i;
      end else begin
       // No! Restore the old palette
-      for jvar := high(pe) downto 0 do begin
-       dword(pe[jvar].colo) := palu[jvar];
-       pe[jvar].colog := palug[jvar];
+      for j := high(pe) downto 0 do begin
+       dword(pe[j].colo) := palu[j];
+       pe[j].colog := palug[j];
       end;
      end;
 
@@ -2210,9 +2240,9 @@ begin
  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
 
  if option.dithering = 4 then begin
-  // Error-diffusive dithering - calculate best dither match per pixel
-  // This uses the Sierra Lite algorithm, in serpentine order
-  // Set up a bitmap to render the result in
+  // Error-diffusive dithering - calculate best dither match per pixel.
+  // This uses the Sierra Lite algorithm, in serpentine order.
+  // Set up a bitmap to render the result in...
   mcg_ForgetImage(@rendimu);
   rendimu.sizex := viewdata[0].bmpdata.sizex;
   rendimu.sizey := viewdata[0].bmpdata.sizey;
@@ -2220,22 +2250,23 @@ begin
   rendimu.bitdepth := 8;
   getmem(rendimu.image, viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey * viewdata[0].alpha);
 
-  // PALU is the diffusion buffer, wraps around using AND KVAR
+  // PALU is the diffusion buffer, wraps around using AND k
   // It has room for 3 rows: 2 headroom pixels + width pixels + 2 footer px
   // and each pixel is represented by four longint values, one per channel.
-  ivar := (rendimu.sizex + 4) * 4 * 3;
-  kvar := 1; while kvar < ivar do kvar := kvar shl 1;
-  setlength(palu, kvar); filldword(palu[0], kvar, 0);
-  dec(kvar);
+  i := (rendimu.sizex + 4) * 4 * 3;
+  k := 1; while k < i do k := k shl 1;
+  setlength(palu, k); filldword(palu[0], k, 0);
+  dec(k);
 
   // Offenders[0] and [1] are temp variables for finding closest pal match.
   diffusecount := 0;
   setlength(offenders, 2);
-  // Diffuselist is used to shuffle the processing order of pixels in each row
+  // Diffuselist is used to shuffle the processing order of pixels in each
+  // row.
   setlength(diffuselist, viewdata[0].bmpdata.sizex);
   for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
    diffuselist[palusize] := palusize;
-  // Process the image, top-down, alternating L-to-R and R-to-L
+  // Process the image, top-down, alternating L-to-R and R-to-L.
   for faktor := 0 to viewdata[0].bmpdata.sizey - 1 do begin
 
    if faktor and 7 = 0 then begin
@@ -2243,7 +2274,7 @@ begin
     SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
    end;
 
-   // Rearrange the horizontal processing order
+   // Rearrange the horizontal processing order.
    if diffuselist[0] = 0 then begin
     for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
      diffuselist[palusize] := viewdata[0].bmpdata.sizex - 1 - palusize;
@@ -2252,35 +2283,35 @@ begin
      diffuselist[palusize] := palusize;
 
    for palusize := 0 to viewdata[0].bmpdata.sizex - 1 do begin
-    // apply diffusion mods to current pixel
-    ivar := (diffusecount + diffuselist[palusize] * 4 + 8) and kvar;
+    // Apply diffusion mods to current pixel...
+    i := (diffusecount + diffuselist[palusize] * 4 + 8) and k;
     wptr := faktor * viewdata[0].bmpdata.sizex + diffuselist[palusize];
     if viewdata[0].alpha = 3 then begin
      // 24-bit
-     x := round(longint(palu[ivar]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
+     x := round(longint(palu[i]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
      if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
-     x := round(longint(palu[ivar + 1]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].g];
+     x := round(longint(palu[i + 1]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].g];
      if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[ivar + 2]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].b];
+     x := round(longint(palu[i + 2]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].b];
      if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
      tempcolor.a := $FF;
     end else begin
      // 32-bit
      tempcolor := mcg_GammaInput(RGBAarray(viewdata[0].bmpdata.image^)[wptr]);
-     x := round(longint(palu[ivar]) / 4) + tempcolor.r;
+     x := round(longint(palu[i]) / 4) + tempcolor.r;
      if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
-     x := round(longint(palu[ivar + 1]) / 4) + tempcolor.g;
+     x := round(longint(palu[i + 1]) / 4) + tempcolor.g;
      if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[ivar + 2]) / 4) + tempcolor.b;
+     x := round(longint(palu[i + 2]) / 4) + tempcolor.b;
      if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
-     x := round(longint(palu[ivar + 3]) / 4) + tempcolor.a;
+     x := round(longint(palu[i + 3]) / 4) + tempcolor.a;
      if x < 0 then tempcolor.a := 0 else if x > 65535 then tempcolor.a := 65535 else tempcolor.a := word(x);
     end;
-    // tempcolor is now the modded current pixel
-    // clear the processed spot in the diffusion buffer, for next cycle use
-    filldword(palu[ivar], 4, 0);
-    // find the closest palette entry
-    // offenders[0].who tracks the closest match, [0].what tracks its error
+    // Tempcolor is now the modded current pixel.
+    // Clear the processed spot in the diffusion buffer, for next cycle use.
+    filldword(palu[i], 4, 0);
+    // Find the closest palette entry.
+    // Offenders[0].who tracks the closest match, [0].what tracks its error.
     offenders[0].what := $FFFFFFFF;
     palptr := option.palsize;
     while palptr <> 0 do begin
@@ -2291,39 +2322,39 @@ begin
      end;
     end;
     palptr := offenders[0].who;
-    // plot the pixel with the matched palette color
+    // Plot the pixel with the matched palette color.
     if viewdata[0].alpha = 3 then begin
      RGBarray(rendimu.image^)[wptr].b := pe[palptr].colo.b;
      RGBarray(rendimu.image^)[wptr].g := pe[palptr].colo.g;
      RGBarray(rendimu.image^)[wptr].r := pe[palptr].colo.r;
     end else
      dword((rendimu.image + wptr)^) := dword(pe[palptr].colo);
-    // calculate the per-channel error
+    // Calculate the per-channel error.
     x := tempcolor.r - pe[palptr].colog.r;
     y := tempcolor.g - pe[palptr].colog.g;
     z := tempcolor.b - pe[palptr].colog.b;
     alf := tempcolor.a - pe[palptr].colog.a;
-    // stuff the error into PALU to diffuse it
-    ivar := (diffusecount + diffuselist[palusize] * 4 + 4) and kvar; // -1x
-    if diffuselist[0] = 0 then ivar := (ivar + 8) and kvar; // or +1x
-    longint(palu[ivar]) := longint(palu[ivar]) + x * 2; inc(ivar);
-    longint(palu[ivar]) := longint(palu[ivar]) + y * 2; inc(ivar);
-    longint(palu[ivar]) := longint(palu[ivar]) + z * 2; inc(ivar);
-    longint(palu[ivar]) := longint(palu[ivar]) + alf * 2; inc(ivar);
-    if diffuselist[0] <> 0 then ivar := (ivar + 12) and kvar;
+    // Stuff the error into PALU to diffuse it.
+    i := (diffusecount + diffuselist[palusize] * 4 + 4) and k; // -1x
+    if diffuselist[0] = 0 then i := (i + 8) and k; // or +1x
+    longint(palu[i]) := longint(palu[i]) + x * 2; inc(i);
+    longint(palu[i]) := longint(palu[i]) + y * 2; inc(i);
+    longint(palu[i]) := longint(palu[i]) + z * 2; inc(i);
+    longint(palu[i]) := longint(palu[i]) + alf * 2; inc(i);
+    if diffuselist[0] <> 0 then i := (i + 12) and k;
     // -1x, +1y (or +0x, +1y if in reverse mode)
-    jvar := (ivar + viewdata[0].bmpdata.sizex * 4 + 4) and kvar;
-    longint(palu[jvar]) := longint(palu[jvar]) + x; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + y; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + z; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + alf; inc(jvar);
-    jvar := jvar and kvar; // step right
-    longint(palu[jvar]) := longint(palu[jvar]) + x; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + y; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + z; inc(jvar);
-    longint(palu[jvar]) := longint(palu[jvar]) + alf;
+    j := (i + viewdata[0].bmpdata.sizex * 4 + 4) and k;
+    longint(palu[j]) := longint(palu[j]) + x; inc(j);
+    longint(palu[j]) := longint(palu[j]) + y; inc(j);
+    longint(palu[j]) := longint(palu[j]) + z; inc(j);
+    longint(palu[j]) := longint(palu[j]) + alf; inc(j);
+    j := j and k; // step right
+    longint(palu[j]) := longint(palu[j]) + x; inc(j);
+    longint(palu[j]) := longint(palu[j]) + y; inc(j);
+    longint(palu[j]) := longint(palu[j]) + z; inc(j);
+    longint(palu[j]) := longint(palu[j]) + alf;
    end;
-   diffusecount := (diffusecount + viewdata[0].bmpdata.sizex * 4 + 16) and kvar;
+   diffusecount := (diffusecount + viewdata[0].bmpdata.sizex * 4 + 16) and k;
   end;
  end
  else begin
@@ -2343,31 +2374,32 @@ begin
   while wptr <> 0 do begin
    dec(wptr);
    // For every real histogram color, put a reference in the PALU hash table.
-   // IVAR is the hash ID for this color.
-   ivar := dword(viewdata[0].bmpdata.palette[wptr]) mod diffusecount;
-   // Find the first free hash table slot starting from IVAR.
-   while palu[ivar] <> $FFFFFFFF do ivar := (ivar + 1) mod diffusecount;
-   // Store the palettegram index of this color
-   palu[ivar] := wptr;
+   // i is the hash ID for this color.
+   i := dword(viewdata[0].bmpdata.palette[wptr]) mod diffusecount;
+   // Find the first free hash table slot starting from i.
+   while palu[i] <> $FFFFFFFF do i := (i + 1) mod diffusecount;
+   // Store the palettegram index of this color.
+   palu[i] := wptr;
 
    // For every palettegram color, also find the closest and second closest
    // palette entry. Then test which dithering mix gives the closest result.
-   jvar := $FFFFFFFF; palptr := option.palsize;
+   j := $FFFFFFFF; palptr := option.palsize;
    while palptr <> 0 do begin
     dec(palptr);
     if pe[palptr].status <> 0 then begin
-     ivar := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), pe[palptr].colog);
-     if ivar < jvar then begin // new closest result!
-      dithertab[wptr].pal1 := palptr; jvar := ivar;
-      if ivar = 0 then break; // exact match! nothing can be closer, move on
+     i := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), pe[palptr].colog);
+     if i < j then begin
+      // new closest result!
+      dithertab[wptr].pal1 := palptr; j := i;
+      if i = 0 then break; // exact match! nothing can be closer, move on
      end;
     end;
    end;
    // Dithertab[wptr].PAL1 points to the palette entry with the least
-   // difference from the real color. JVAR remembers the difference value.
+   // difference from the real color. j remembers the difference value.
 
-   if jvar = 0 then begin
-    // special case - if the closest palette entry is exactly the real color,
+   if j = 0 then begin
+    // Special case - if the closest palette entry is exactly the real color,
     // we already know it need not be dithered, so move along.
     dithertab[wptr].pal2 := dithertab[wptr].pal1;
     dithertab[wptr].mix := 0;
@@ -2378,15 +2410,15 @@ begin
    // Now to find a PAL2 that is across the real color, from PAL1.
    // If the distance from the real color to PAL2 is less than the distance
    // from PAL1 to PAL2, then PAL2 is on the other side than PAL1.
-   kvar := $FFFFFFFF; palptr := option.palsize;
+   k := $FFFFFFFF; palptr := option.palsize;
    dithertab[wptr].pal2 := dithertab[wptr].pal1;
    while palptr <> 0 do begin
     dec(palptr);
     if pe[palptr].status <> 0 then begin
-     ivar := diff(pe[palptr].colog, mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]));
-     if (ivar <= diff(pe[dithertab[wptr].pal1].colog, pe[palptr].colog))
-     and (ivar < kvar) then begin
-      dithertab[wptr].pal2 := palptr; kvar := ivar;
+     i := diff(pe[palptr].colog, mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]));
+     if (i <= diff(pe[dithertab[wptr].pal1].colog, pe[palptr].colog))
+     and (i < k) then begin
+      dithertab[wptr].pal2 := palptr; k := i;
      end;
     end;
    end;
@@ -2401,42 +2433,49 @@ begin
     tempcolor.g := (pe[dithertab[wptr].pal1].colog.g + pe[dithertab[wptr].pal2].colog.g + 1) shr 1;
     tempcolor.b := (pe[dithertab[wptr].pal1].colog.b + pe[dithertab[wptr].pal2].colog.b + 1) shr 1;
     tempcolor.a := (pe[dithertab[wptr].pal1].colog.a + pe[dithertab[wptr].pal2].colog.a + 1) shr 1;
-    ivar := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
+    i := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
     case option.dithering of
-     1,5: if ivar < jvar then dithertab[wptr].mix := option.dithering;
-     2: begin
-         // Calculate 75-25 diff from the real color
-         tempcolor.r := (pe[dithertab[wptr].pal1].colog.r * 3 + pe[dithertab[wptr].pal2].colog.r + 2) shr 2;
-         tempcolor.g := (pe[dithertab[wptr].pal1].colog.g * 3 + pe[dithertab[wptr].pal2].colog.g + 2) shr 2;
-         tempcolor.b := (pe[dithertab[wptr].pal1].colog.b * 3 + pe[dithertab[wptr].pal2].colog.b + 2) shr 2;
-         tempcolor.a := (pe[dithertab[wptr].pal1].colog.a * 3 + pe[dithertab[wptr].pal2].colog.a + 2) shr 2;
-         kvar := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
-         if (kvar < jvar) and (kvar < ivar) then dithertab[wptr].mix := 2 else
-         if (ivar < jvar) then dithertab[wptr].mix := 1;
-        end;
-     3: begin
-         // linear weight calculation, scaled to 0..8
-         kvar := (8 * jvar + (ivar + jvar) div 2) div (ivar + jvar);
-         dithertab[wptr].mix := 32 + kvar;
-        end;
-     6: begin
-         // linear weight calculation, scaled to 0..2.5 (x2 for fraction)
-         kvar := (5 * jvar + (ivar + jvar) div 2) div (ivar + jvar);
-         dithertab[wptr].mix := 64 + kvar;
-        end;
+      1,5: if i < j then dithertab[wptr].mix := option.dithering;
+
+      2:
+      begin
+       // Calculate 75-25 diff from the real color
+       tempcolor.r := (pe[dithertab[wptr].pal1].colog.r * 3 + pe[dithertab[wptr].pal2].colog.r + 2) shr 2;
+       tempcolor.g := (pe[dithertab[wptr].pal1].colog.g * 3 + pe[dithertab[wptr].pal2].colog.g + 2) shr 2;
+       tempcolor.b := (pe[dithertab[wptr].pal1].colog.b * 3 + pe[dithertab[wptr].pal2].colog.b + 2) shr 2;
+       tempcolor.a := (pe[dithertab[wptr].pal1].colog.a * 3 + pe[dithertab[wptr].pal2].colog.a + 2) shr 2;
+       k := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
+       if (k < j) and (k < i) then dithertab[wptr].mix := 2 else
+       if (i < j) then dithertab[wptr].mix := 1;
+      end;
+
+      3:
+      begin
+       // linear weight calculation, scaled to 0..8
+       k := (8 * j + (i + j) div 2) div (i + j);
+       dithertab[wptr].mix := 32 + k;
+      end;
+
+      6:
+      begin
+       // linear weight calculation, scaled to 0..2.5 (x2 for fraction)
+       k := (5 * j + (i + j) div 2) div (i + j);
+       dithertab[wptr].mix := 64 + k;
+      end;
     end;
+
     // Eliminate dither banding: make sure the dithering pair is in the same
     // order, whichever of the pair is closer.
     if (dword(pe[dithertab[wptr].pal1].colo) < dword(pe[dithertab[wptr].pal2].colo))
     and (dithertab[wptr].mix <> 0)
     then begin
-     ivar := dithertab[wptr].pal1;
+     i := dithertab[wptr].pal1;
      dithertab[wptr].pal1 := dithertab[wptr].pal2;
-     dithertab[wptr].pal2 := ivar;
+     dithertab[wptr].pal2 := i;
      case dithertab[wptr].mix of
-      2: dithertab[wptr].mix := 255;
-      32..40: dithertab[wptr].mix := 80 - dithertab[wptr].mix;
-      64..69: dithertab[wptr].mix := 139 - dithertab[wptr].mix;
+       2: dithertab[wptr].mix := 255;
+       32..40: dithertab[wptr].mix := 80 - dithertab[wptr].mix;
+       64..69: dithertab[wptr].mix := 139 - dithertab[wptr].mix;
      end;
     end;
    end;
@@ -2477,21 +2516,36 @@ begin
     dec(wptr);
     if palusize = 0 then begin dec(palptr); palusize := viewdata[0].bmpdata.sizex; end;
     dec(palusize);
-    ivar := dword((viewdata[0].bmpdata.image + wptr * 4)^);
-    jvar := ivar mod diffusecount;
-    while (palu[jvar] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[jvar]]) <> ivar)
-    do jvar := (jvar + 1) mod diffusecount;
-    jvar := palu[jvar];
-    dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal1].colo);
-    case dithertab[jvar].mix of
-     1: if (palptr + palusize) and 1 <> 0 then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
-     2: if ((palptr shl 1) + palusize) and 3 = 0 then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
-     255: if ((palptr shl 1) + palusize) and 3 <> 0 then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
-     5: if palptr and 1 <> 0 then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
-     32..48: if octadtab[palptr and 3, palusize and 3] <= dithertab[jvar].mix - 32
-             then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
-     64..75: if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[jvar].mix - 64) shr 1
-             then dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[jvar].pal2].colo);
+    i := dword((viewdata[0].bmpdata.image + wptr * 4)^);
+    j := i mod diffusecount;
+    while (palu[j] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[j]]) <> i)
+    do j := (j + 1) mod diffusecount;
+    j := palu[j];
+    dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal1].colo);
+    case dithertab[j].mix of
+      1:
+      if (palptr + palusize) and 1 <> 0 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
+
+      2:
+      if ((palptr shl 1) + palusize) and 3 = 0 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
+
+      255:
+      if ((palptr shl 1) + palusize) and 3 <> 0 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
+
+      5:
+      if palptr and 1 <> 0 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
+
+      32..48:
+      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
+
+      64..75:
+      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
+       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
     end;
    end;
   end else begin
@@ -2500,28 +2554,44 @@ begin
     dec(wptr);
     if palusize = 0 then begin dec(palptr); palusize := viewdata[0].bmpdata.sizex; end;
     dec(palusize);
-    ivar := (RGBarray(viewdata[0].bmpdata.image^)[wptr].r shl 16)
-         or (RGBarray(viewdata[0].bmpdata.image^)[wptr].g shl 8)
-         or (RGBarray(viewdata[0].bmpdata.image^)[wptr].b)
-         or $FF000000;
-    jvar := ivar mod diffusecount;
-    while (palu[jvar] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[jvar]]) <> ivar)
-    do jvar := (jvar + 1) mod diffusecount;
-    jvar := palu[jvar];
-    kvar := dithertab[jvar].pal1;
-    case dithertab[jvar].mix of
-     1: if (palptr + palusize) and 1 <> 0 then kvar := dithertab[jvar].pal2;
-     2: if ((palptr shl 1) + palusize) and 3 = 0 then kvar := dithertab[jvar].pal2;
-     255: if ((palptr shl 1) + palusize) and 3 <> 0 then kvar := dithertab[jvar].pal2;
-     5: if palptr and 1 <> 0 then kvar := dithertab[jvar].pal2;
-     32..48: if octadtab[palptr and 3, palusize and 3] <= dithertab[jvar].mix - 32
-             then kvar := dithertab[jvar].pal2;
-     64..75: if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[jvar].mix - 64) shr 1
-             then kvar := dithertab[jvar].pal2;
+    i := (RGBarray(viewdata[0].bmpdata.image^)[wptr].r shl 16)
+      or (RGBarray(viewdata[0].bmpdata.image^)[wptr].g shl 8)
+      or (RGBarray(viewdata[0].bmpdata.image^)[wptr].b)
+      or $FF000000;
+    j := i mod diffusecount;
+    while (palu[j] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[j]]) <> i)
+     do j := (j + 1) mod diffusecount;
+    j := palu[j];
+    k := dithertab[j].pal1;
+    case dithertab[j].mix of
+      1:
+      if (palptr + palusize) and 1 <> 0 then
+       k := dithertab[j].pal2;
+
+      2:
+      if ((palptr shl 1) + palusize) and 3 = 0 then
+       k := dithertab[j].pal2;
+
+      255:
+      if ((palptr shl 1) + palusize) and 3 <> 0 then
+       k := dithertab[j].pal2;
+
+      5:
+      if palptr and 1 <> 0 then
+       k := dithertab[j].pal2;
+
+      32..48:
+      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
+       k := dithertab[j].pal2;
+
+      64..75:
+      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
+       k := dithertab[j].pal2;
     end;
-    RGBarray(rendimu.image^)[wptr].b := pe[kvar].colo.b;
-    RGBarray(rendimu.image^)[wptr].g := pe[kvar].colo.g;
-    RGBarray(rendimu.image^)[wptr].r := pe[kvar].colo.r;
+
+    RGBarray(rendimu.image^)[wptr].b := pe[k].colo.b;
+    RGBarray(rendimu.image^)[wptr].g := pe[k].colo.g;
+    RGBarray(rendimu.image^)[wptr].r := pe[k].colo.r;
    end;
   end;
  end;
@@ -2529,8 +2599,8 @@ begin
  // Clean up!
  setlength(wgram, 0); setlength(dithertab, 0);
  setlength(palu, 0); setlength(palug, 0); setlength(diffuselist, 0);
- // Fill out rendimu.palette, colors use PE index values if possible,
- // and forget the non-preset palette entries
+ // Fill out rendimu.palette, colors use PE index values if possible, and
+ // forget the non-preset palette entries.
  setlength(rendimu.palette, option.palsize);
  wptr := 0;
  for palptr := 0 to option.palsize - 1 do begin
@@ -2542,7 +2612,7 @@ begin
  end;
  setlength(rendimu.palette, wptr);
 
- // Let the user know we're done
+ // Let the user know we're done.
  SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
 end;
 
@@ -2569,8 +2639,8 @@ begin
   dec(mur);
  end;
 
- if SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0
- then EnableWindow(mv_ButtonH[2], TRUE);
+ if SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
+  EnableWindow(mv_ButtonH[2], TRUE);
 end;
 
 procedure ValidateAlfaco;
@@ -2594,62 +2664,70 @@ begin
   dec(mur);
  end;
 
- if SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0
- then EnableWindow(mv_ButtonH[2], TRUE);
+ if SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
+  EnableWindow(mv_ButtonH[2], TRUE);
 end;
 
 function HelpProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // A window for displaying helpful text.
 var z : dword;
-    ivar : byte;
+    i : byte;
     kind : string[9];
     bulkhelp : pointer;
 begin
  HelpProc := 0;
  case amex of
-  wm_Create: begin
-   kind := 'EDIT' + chr(0);
-   z := WS_CHILD or WS_VISIBLE or WS_VSCROLL or ES_WANTRETURN or ES_MULTILINE or ES_READONLY;
-   HelpTxtH := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
-     0, 0, helpsizex, helpsizey,
-     window, 29, system.maininstance, NIL);
-   SendMessageA(HelpTxtH, WM_SETFONT, longint(mv_FontH[1]), 0);
-   SendMessageA(HelpTxtH, EM_SETMARGINS, EC_LEFTMARGIN or EC_RIGHTMARGIN, $100010);
-   // populate the help text
-   getmem(bulkhelp, 256 * length(helptxt) + 1);
-   z := 0;
-   for ivar := 0 to high(helptxt) do begin
-    move(helptxt[ivar][1], (bulkhelp + z)^, length(helptxt[ivar]));
-    inc(z, length(helptxt[ivar]));
-    byte((bulkhelp + z)^) := 13; inc(z);
-    byte((bulkhelp + z)^) := 10; inc(z);
-    byte((bulkhelp + z)^) := 13; inc(z);
-    byte((bulkhelp + z)^) := 10; inc(z);
+   wm_Create:
+   begin
+    kind := 'EDIT' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or WS_VSCROLL or ES_WANTRETURN
+      or ES_MULTILINE or ES_READONLY;
+    HelpTxtH := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
+      0, 0, helpsizex, helpsizey,
+      window, 29, system.maininstance, NIL);
+    SendMessageA(HelpTxtH, WM_SETFONT, longint(mv_FontH[1]), 0);
+    SendMessageA(HelpTxtH, EM_SETMARGINS, EC_LEFTMARGIN or EC_RIGHTMARGIN, $100010);
+    // Populate the help text.
+    getmem(bulkhelp, 256 * length(helptxt) + 1);
+    z := 0;
+    for i := 0 to high(helptxt) do begin
+     move(helptxt[i][1], (bulkhelp + z)^, length(helptxt[i]));
+     inc(z, length(helptxt[i]));
+     byte((bulkhelp + z)^) := 13; inc(z);
+     byte((bulkhelp + z)^) := 10; inc(z);
+     byte((bulkhelp + z)^) := 13; inc(z);
+     byte((bulkhelp + z)^) := 10; inc(z);
+    end;
+    byte((bulkhelp + z)^) := 0; inc(z);
+    SendMessageA(HelpTxtH, WM_SETTEXT, 0, ptrint(bulkhelp));
+    freemem(bulkhelp);
    end;
-   byte((bulkhelp + z)^) := 0; inc(z);
-   SendMessageA(HelpTxtH, WM_SETTEXT, 0, ptrint(bulkhelp));
-   freemem(bulkhelp);
-  end;
 
-  wm_MouseWheel: begin
-   longint(z) := integer(wepu shr 16);
-   if longint(z) < 0 then SendMessage(HelpTxtH, EM_SCROLL, SB_LINEDOWN, 0)
-   else SendMessage(HelpTxtH, EM_SCROLL, SB_LINEUP, 0);
-  end;
+   wm_MouseWheel:
+   begin
+    longint(z) := integer(wepu shr 16);
+    if longint(z) < 0 then
+     SendMessage(HelpTxtH, EM_SCROLL, SB_LINEDOWN, 0)
+    else
+     SendMessage(HelpTxtH, EM_SCROLL, SB_LINEUP, 0);
+   end;
 
-  wm_Size: begin // if resizing the window, also resize the edit field
-   helpsizex := word(lapu);
-   helpsizey := lapu shr 16;
-   SetWindowPos(HelpTxtH, 0, 0, 0, helpsizex, helpsizey,
-   SWP_NOACTIVATE or SWP_NOCOPYBITS or SWP_NOMOVE or SWP_NOZORDER);
-  end;
+   wm_Size:
+   begin
+    // If resizing the window, also resize the edit field.
+    helpsizex := word(lapu);
+    helpsizey := lapu shr 16;
+    SetWindowPos(HelpTxtH, 0, 0, 0, helpsizex, helpsizey,
+    SWP_NOACTIVATE or SWP_NOCOPYBITS or SWP_NOMOVE or SWP_NOZORDER);
+   end;
 
-  wm_Close: begin
-   DestroyWindow(window);
-   HelpWinH := 0; HelpProc := 0;
-  end;
+   wm_Close:
+   begin
+    DestroyWindow(window);
+    HelpWinH := 0; HelpProc := 0;
+   end;
 
-  else HelpProc := DefWindowProc(window, amex, wepu, lapu);
+   else HelpProc := DefWindowProc(window, amex, wepu, lapu);
  end;
 end;
 
@@ -2662,77 +2740,86 @@ var flaguz : dword;
 begin
  AlfaSelectorProc := 0;
  case amex of
-  wm_InitDialog: begin
-                  flaguz := SWP_NOMOVE or SWP_NOREDRAW;
-                  rr.left := 0; rr.right := 384;
-                  rr.top := 0; rr.bottom := 144;
-                  AdjustWindowRect(rr, WS_CAPTION or DS_CENTER or DS_MODALFRAME, FALSE);
-                  SetWindowPos(window, HWND_TOP, 0, 0, rr.right - rr.left, rr.bottom - rr.top, flaguz);
+   wm_InitDialog:
+   begin
+    flaguz := SWP_NOMOVE or SWP_NOREDRAW;
+    rr.left := 0; rr.right := 384;
+    rr.top := 0; rr.bottom := 144;
+    AdjustWindowRect(rr, WS_CAPTION or DS_CENTER or DS_MODALFRAME, FALSE);
+    SetWindowPos(window, HWND_TOP, 0, 0, rr.right - rr.left, rr.bottom - rr.top, flaguz);
 
-                  kind := 'STATIC' + chr(0); txt := 'Please enter the hexadecimal color to render the alpha channel with' + chr(13) + '(example: FF00FF would be pinkish violet)' + chr(0);
-                  flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
-                  rr.left := 0; rr.right := 384;
-                  rr.top := 24; rr.bottom := 32;
-                  handuli := CreateWindow(@kind[1], @txt[1], flaguz,
-                               rr.left, rr.top, rr.right, rr.bottom,
-                               window, 180, system.maininstance, NIL);
-                  SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[2]), -1);
+    kind := 'STATIC' + chr(0);
+    txt := 'Please enter the hexadecimal color to render the alpha channel with' + chr(13) + '(example: FF00FF would be pinkish violet)' + chr(0);
+    flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
+    rr.left := 0; rr.right := 384;
+    rr.top := 24; rr.bottom := 32;
+    handuli := CreateWindow(@kind[1], @txt[1], flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 180, system.maininstance, NIL);
+    SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[2]), -1);
 
-                  kind := 'EDIT' + chr(0); txt := hexifycolor(acolor) + chr(0);
-                  flaguz := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or WS_TABSTOP;
-                  rr.left := 96; rr.right := 192;
-                  rr.top := 64; rr.bottom := 24;
-                  handuli := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], @txt[1], flaguz,
-                               rr.left, rr.top, rr.right, rr.bottom,
-                               window, 181, system.maininstance, NIL);
-                  SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[1]), -1);
-                  SendMessageA(handuli, EM_SETLIMITTEXT, 6, 0);
+    kind := 'EDIT' + chr(0);
+    txt := hexifycolor(acolor) + chr(0);
+    flaguz := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or WS_TABSTOP;
+    rr.left := 96; rr.right := 192;
+    rr.top := 64; rr.bottom := 24;
+    handuli := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], @txt[1], flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 181, system.maininstance, NIL);
+    SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[1]), -1);
+    SendMessageA(handuli, EM_SETLIMITTEXT, 6, 0);
 
-                  kind := 'BUTTON' + chr(0); txt := 'OK' + chr(0);
-                  flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_DEFPUSHBUTTON or WS_TABSTOP;
-                  rr.left := 160; rr.right := 56;
-                  rr.top := 96; rr.bottom := 24;
-                  handuli := CreateWindow(@kind[1], @txt[1], flaguz,
-                               rr.left, rr.top, rr.right, rr.bottom,
-                               window, 182, system.maininstance, NIL);
-                  SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[1]), -1);
-                  SendMessageA(window, DM_SETDEFID, 182, 0);
+    kind := 'BUTTON' + chr(0);
+    txt := 'OK' + chr(0);
+    flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_DEFPUSHBUTTON or WS_TABSTOP;
+    rr.left := 160; rr.right := 56;
+    rr.top := 96; rr.bottom := 24;
+    handuli := CreateWindow(@kind[1], @txt[1], flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 182, system.maininstance, NIL);
+    SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[1]), -1);
+    SendMessageA(window, DM_SETDEFID, 182, 0);
 
-                  AlfaSelectorProc := 1;
-                 end;
-  wm_Command: if word(wepu) = 182 then begin
-               SendMessageA(window, wm_Close, 0, 0);
-               AlfaSelectorProc := 1;
-              end else if word(wepu) = 181 then begin
-               if wepu shr 16 = EN_UPDATE then begin
-                txt[0] := chr(0);
-                byte(kind[0]) := SendMessageA(lapu, WM_GETTEXT, 9, ptrint(@kind[1]));
-                flaguz := length(kind);
-                while flaguz <> 0 do begin
-                 if (kind[flaguz] in ['0'..'9','A'..'F'] = FALSE) then begin
-                  kind := copy(kind, 1, flaguz - 1) + copy(kind, flaguz + 1, length(kind) - flaguz);
-                  txt[0] := chr(flaguz);
-                 end;
-                 dec(flaguz);
-                end;
-                kind := kind + chr(0);
-                flaguz := 0; flaguz := byte(txt[0]);
-                if flaguz <> 0 then begin
-                 dec(flaguz);
-                 SendMessageA(lapu, WM_SETTEXT, length(kind), ptrint(@kind[1]));
-                 SendMessageA(lapu, EM_SETSEL, flaguz, flaguz);
-                end;
-                flaguz := valhex(kind);
-                acolor.b := byte(flaguz);
-                acolor.g := byte(flaguz shr 8);
-                acolor.r := byte(flaguz shr 16);
-               end;
-              end;
-  wm_Close: begin
-             for flaguz := 0 to high(viewdata) do RedrawView(flaguz);
-             EndDialog(window, 0);
-             AlfaSelectorProc := 1;
-            end;
+    AlfaSelectorProc := 1;
+   end;
+
+   wm_Command:
+   if word(wepu) = 182 then begin
+    SendMessageA(window, wm_Close, 0, 0);
+    AlfaSelectorProc := 1;
+   end
+   else if word(wepu) = 181 then begin
+    if wepu shr 16 = EN_UPDATE then begin
+     txt[0] := chr(0);
+     byte(kind[0]) := SendMessageA(lapu, WM_GETTEXT, 9, ptrint(@kind[1]));
+     flaguz := length(kind);
+     while flaguz <> 0 do begin
+      if (kind[flaguz] in ['0'..'9','A'..'F'] = FALSE) then begin
+       kind := copy(kind, 1, flaguz - 1) + copy(kind, flaguz + 1, length(kind) - flaguz);
+       txt[0] := chr(flaguz);
+      end;
+      dec(flaguz);
+     end;
+     kind := kind + chr(0);
+     flaguz := 0; flaguz := byte(txt[0]);
+     if flaguz <> 0 then begin
+      dec(flaguz);
+      SendMessageA(lapu, WM_SETTEXT, length(kind), ptrint(@kind[1]));
+      SendMessageA(lapu, EM_SETSEL, flaguz, flaguz);
+     end;
+     flaguz := valhex(kind);
+     acolor.b := byte(flaguz);
+     acolor.g := byte(flaguz shr 8);
+     acolor.r := byte(flaguz shr 16);
+    end;
+   end;
+
+   wm_Close:
+   begin
+    for flaguz := 0 to high(viewdata) do RedrawView(flaguz);
+    EndDialog(window, 0);
+    AlfaSelectorProc := 1;
+   end;
  end;
 end;
 
@@ -2743,839 +2830,931 @@ var flaguz : dword;
 begin
  FunProc := 0;
  case amex of
-  wm_InitDialog: begin
-                  if (batchprocess) and (strutsi <> '') then begin
-                   strutsi := strutsi + chr(0);
-                   SendMessageA(window, WM_SETTEXT, 0, longint(@strutsi[1]));
-                  end;
-                  // fun window: (8 + funsizex + 8) x (8 + funsizey + 76)
-                  funsizex := funsizex and $FFFC; // confirm DWORD-alignment
-                  funwinhandle := window;
-                  kind := 'STATIC' + chr(0); txt := 'Initialising...' + chr(0);
-                  flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
-                  rr.left := 0; rr.right := funsizex + 16;
-                  rr.top := funsizey + 16; rr.bottom := 24;
-                  funstatus := CreateWindow(@kind[1], @txt[1], flaguz,
-                               rr.left, rr.top, rr.right, rr.bottom,
-                               window, 71, system.maininstance, NIL);
-                  SendMessageA(funstatus, WM_SETFONT, longint(mv_FontH[2]), -1);
-                  kind := 'BUTTON' + chr(0); txt := 'Never mind' + chr(0);
-                  flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_PUSHLIKE;
-                  rr.left := (funsizex shr 1) - 56; rr.right := 128;
-                  rr.top := funsizey + 48; rr.bottom := 24;
-                  funbutton := CreateWindow(@kind[1], @txt[1], flaguz,
-                               rr.left, rr.top, rr.right, rr.bottom,
-                               window, 72, system.maininstance, NIL);
-                  SendMessageA(funbutton, WM_SETFONT, longint(mv_FontH[1]), -1);
-                  kind := 'STATIC' + chr(0); txt := chr(0);
-                  flaguz := SS_BITMAP or WS_CHILD or WS_VISIBLE;
-                  rr.left := 8; rr.right := funsizex;
-                  rr.top := 8; rr.bottom := funsizey;
-                  funpal := CreateWindow(@kind[1], NIL, flaguz,
-                            rr.left, rr.top, rr.right, rr.bottom,
-                            window, 73, system.maininstance, NIL);
+   wm_InitDialog:
+   begin
+    if (batchprocess) and (strutsi <> '') then begin
+     strutsi := strutsi + chr(0);
+     SendMessageA(window, WM_SETTEXT, 0, longint(@strutsi[1]));
+    end;
+    // fun window: (8 + funsizex + 8) x (8 + funsizey + 76)
+    funsizex := funsizex and $FFFC; // confirm DWORD-alignment
+    funwinhandle := window;
+    kind := 'STATIC' + chr(0);
+    txt := 'Initialising...' + chr(0);
+    flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
+    rr.left := 0; rr.right := funsizex + 16;
+    rr.top := funsizey + 16; rr.bottom := 24;
+    funstatus := CreateWindow(@kind[1], @txt[1], flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 71, system.maininstance, NIL);
+    SendMessageA(funstatus, WM_SETFONT, longint(mv_FontH[2]), -1);
 
-                  with bminfo.bmiheader do begin
-                   bisize := sizeof(bminfo.bmiheader);
-                   biwidth := funsizex;
-                   biheight := -funsizey;
-                   bisizeimage := 0; biplanes := 1;
-                   bibitcount := 32; bicompression := bi_rgb;
-                   biclrused := 0; biclrimportant := 0;
-                   bixpelspermeter := 28000; biypelspermeter := 28000;
-                  end;
-                  dword(bminfo.bmicolors) := 0;
-                  mv_DC := getDC(funpal);
-                  mv_FunDIBhandle := createDIBsection(mv_DC, bminfo, dib_rgb_colors, mv_FunBuffy, 0, 0);
-                  ReleaseDC(funpal, mv_DC);
-                  SendMessageA(funpal, STM_SETIMAGE, IMAGE_BITMAP, longint(mv_FunDIBhandle));
-                  // Set a timed update
-                  SetTimer(window, 123, 500, NIL);
-                  FunProc := 1;
-                 end;
-  wm_Command: if word(wepu) = 72 then begin
-               compressing := FALSE;
-               FunProc := 1;
-              end;
-  wm_Timer: if updatefun then begin
-             DrawFunBuffy;
-             updatefun := FALSE;
-             FunProc := 1;
-            end;
-  wm_Close: begin
-             KillTimer(window, 123);
-             deleteObject(mv_FunDIBHandle); mv_FunDIBHandle := 0;
-             mv_FunBuffy := NIL; funwinhandle := 0;
-             compressing := FALSE;
-             EndDialog(window, 0);
-             FunProc := 1;
-            end;
+    kind := 'BUTTON' + chr(0);
+    txt := 'Never mind' + chr(0);
+    flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_PUSHLIKE;
+    rr.left := (funsizex shr 1) - 56; rr.right := 128;
+    rr.top := funsizey + 48; rr.bottom := 24;
+    funbutton := CreateWindow(@kind[1], @txt[1], flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 72, system.maininstance, NIL);
+    SendMessageA(funbutton, WM_SETFONT, longint(mv_FontH[1]), -1);
+
+    kind := 'STATIC' + chr(0); txt := chr(0);
+    flaguz := SS_BITMAP or WS_CHILD or WS_VISIBLE;
+    rr.left := 8; rr.right := funsizex;
+    rr.top := 8; rr.bottom := funsizey;
+    funpal := CreateWindow(@kind[1], NIL, flaguz,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 73, system.maininstance, NIL);
+
+    with bminfo.bmiheader do begin
+     bisize := sizeof(bminfo.bmiheader);
+     biwidth := funsizex;
+     biheight := -funsizey;
+     bisizeimage := 0; biplanes := 1;
+     bibitcount := 32; bicompression := bi_rgb;
+     biclrused := 0; biclrimportant := 0;
+     bixpelspermeter := 28000; biypelspermeter := 28000;
+    end;
+    dword(bminfo.bmicolors) := 0;
+    mv_DC := getDC(funpal);
+    mv_FunDIBhandle := createDIBsection(mv_DC, bminfo, dib_rgb_colors, mv_FunBuffy, 0, 0);
+    ReleaseDC(funpal, mv_DC);
+    SendMessageA(funpal, STM_SETIMAGE, IMAGE_BITMAP, longint(mv_FunDIBhandle));
+    // Set a timed update.
+    SetTimer(window, 123, 500, NIL);
+    FunProc := 1;
+   end;
+
+   wm_Command:
+   if word(wepu) = 72 then begin
+    compressing := FALSE;
+    FunProc := 1;
+   end;
+
+   wm_Timer:
+   if updatefun then begin
+    DrawFunBuffy;
+    updatefun := FALSE;
+    FunProc := 1;
+   end;
+
+   wm_Close:
+   begin
+    KillTimer(window, 123);
+    deleteObject(mv_FunDIBHandle); mv_FunDIBHandle := 0;
+    mv_FunBuffy := NIL; funwinhandle := 0;
+    compressing := FALSE;
+    EndDialog(window, 0);
+    FunProc := 1;
+   end;
  end;
 end;
 
 function MagicProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
-// Handles win32 messages for the magic color list
+// Handles win32 messages for the magic color list.
 var mv_PS : paintstruct;
     kind : string[16];
     z : longint;
 begin
  case amex of
-  // Copy stuff to screen from our own buffer
-  wm_Paint: begin
-             mv_DC := beginPaint (window, @mv_PS);
-             bitBlt (mv_DC,
-                     mv_PS.rcPaint.left,
-                     mv_PS.rcPaint.top,
-                     mv_PS.rcPaint.right - mv_PS.rcPaint.left + 1,
-                     mv_PS.rcPaint.bottom - mv_PS.rcPaint.top + 1,
-                     mv_ListBuffyDC,
-                     mv_PS.rcPaint.left, mv_PS.rcPaint.top,
-                     SRCCOPY);
-             endPaint (window, mv_PS);
-             MagicProc := 0;
-            end;
-  // Mouseclicks
-  wm_LButtonDown: begin
-                 pe_used := (lapu shr 16) div (160 shr 3) + GetScrollPos(mv_SliderH[1], SB_CTL);
-                 kind := 'Selected: ' + strdec(pe_used) + chr(0);
-                 SendMessageA(mv_StaticH[6], WM_SETTEXT, 0, ptrint(@kind[1]));
-                 DrawMagicList;
-                 if pe[pe_used].status = 0 then begin
-                  kind := chr(0);
-                  SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-                  kind := 'FF' + chr(0);
-                  SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
-                  EnableWindow(mv_ButtonH[3], FALSE);
-                 end else begin
-                  kind := hexifycolor(pe[pe_used].colo) + chr(0);
-                  SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-                  kind := hextable[pe[pe_used].colo.a shr 4] + hextable[pe[pe_used].colo.a and $F] + chr(0);
-                  SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
-                  EnableWindow(mv_ButtonH[3], TRUE);
-                 end;
-                 colorpicking := FALSE;
-                 SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                 ShowWindow(mv_StaticH[7], SW_HIDE);
-                 InvalidateRect(mv_ColorBlockH, NIL, TRUE);
-                 MagicProc := 0;
-                end;
-  else MagicProc := DefWindowProc (Window, AMex, wepu, lapu);
+   // Copy stuff to screen from our own buffer
+   wm_Paint:
+   begin
+    mv_DC := beginPaint (window, @mv_PS);
+    bitBlt (mv_DC,
+      mv_PS.rcPaint.left,
+      mv_PS.rcPaint.top,
+      mv_PS.rcPaint.right - mv_PS.rcPaint.left + 1,
+      mv_PS.rcPaint.bottom - mv_PS.rcPaint.top + 1,
+      mv_ListBuffyDC,
+      mv_PS.rcPaint.left, mv_PS.rcPaint.top,
+      SRCCOPY);
+    endPaint (window, mv_PS);
+    MagicProc := 0;
+   end;
+
+   // Mouseclicks
+   wm_LButtonDown:
+   begin
+    pe_used := (lapu shr 16) div (160 shr 3) + GetScrollPos(mv_SliderH[1], SB_CTL);
+    kind := 'Selected: ' + strdec(pe_used) + chr(0);
+    SendMessageA(mv_StaticH[6], WM_SETTEXT, 0, ptrint(@kind[1]));
+    DrawMagicList;
+    if pe[pe_used].status = 0 then begin
+     kind := chr(0);
+     SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
+     kind := 'FF' + chr(0);
+     SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
+     EnableWindow(mv_ButtonH[3], FALSE);
+    end
+    else begin
+     kind := hexifycolor(pe[pe_used].colo) + chr(0);
+     SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
+     kind := hextable[pe[pe_used].colo.a shr 4] + hextable[pe[pe_used].colo.a and $F] + chr(0);
+     SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
+     EnableWindow(mv_ButtonH[3], TRUE);
+    end;
+    colorpicking := FALSE;
+    SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+    ShowWindow(mv_StaticH[7], SW_HIDE);
+    InvalidateRect(mv_ColorBlockH, NIL, TRUE);
+    MagicProc := 0;
+   end;
+
+   else MagicProc := DefWindowProc (Window, AMex, wepu, lapu);
  end;
 end;
 
 function mv_MainProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
-// Message handler for the main work window that has everything on it
+// Message handler for the main work window that has everything on it.
 var kind, txt : string;
     slideinfo : scrollinfo;
     openfilurec : openfilename;
     cliphand : handle;
     objp, filulist : pointer;
-    ivar, jvar, z : dword;
+    i, j, z : dword;
     f : file;
 begin
  mv_MainProc := 0;
  case amex of
-  // Initialization
-  wm_Create: begin
-              kind := 'Arial' + chr(0); // bold font
-              mv_FontH[1] := CreateFont(16, 0, 0, 0, 600, 0, 0, 0,
-                             ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
-              kind := 'Arial' + chr(0); // smaller normal font
-              mv_FontH[2] := CreateFont(14, 0, 0, 0, 0, 0, 0, 0, ANSI_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
-              // Create static interface strings
-              kind := 'STATIC' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or SS_ETCHEDHORZ;
-              rr.left := 0; rr.right := mainsizex + 8;
-              rr.top := 0; rr.bottom := 1;
-              mv_StaticH[1]:= CreateWindow(@kind[1], NIL, z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 51, system.maininstance, NIL);
-              z := WS_CHILD or WS_VISIBLE or SS_LEFT;
-              rr.left := 8; rr.right := mainsizex - 8;
-              rr.top := 8; rr.bottom := 16;
-              txt := 'Preset palette' + chr(0);
-              mv_StaticH[2]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 52, system.maininstance, NIL);
-              rr.left := 8; rr.right := mainsizex - 8;
-              rr.top := mainsizey - 132; rr.bottom := 16;
-              txt := 'Output palette size: 256 colors' + chr(0);
-              mv_StaticH[3]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 53, system.maininstance, NIL);
-              rr.left := 8; rr.right := (mainsizex shr 1) - 8;
-              rr.top := mainsizey - 80; rr.bottom := 16;
-              txt := 'Colorspace:' + chr(0);
-              mv_StaticH[4]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 54, system.maininstance, NIL);
-              rr.left := mainsizex shr 1; rr.right := (mainsizex shr 1) - 8;
-              txt := 'Dithering:' + chr(0);
-              mv_StaticH[5]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 55, system.maininstance, NIL);
-              rr.top := 42; rr.bottom := 20;
-              rr.left := mainsizex shr 1; rr.right := (mainsizex shr 2) - 8;
-              txt := 'Selected: 0' + chr(0);
-              mv_StaticH[6]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 56, system.maininstance, NIL);
+   // Initialization
+   wm_Create:
+   begin
+    kind := 'Arial' + chr(0); // bold font
+    mv_FontH[1] := CreateFont(16, 0, 0, 0, 600, 0, 0, 0,
+      ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
 
-              // toggle visibility when colorpicking and color already set
-              z := WS_CHILD or SS_CENTER;
-              rr.top := 10;
-              rr.left := (mainsizex shr 2) * 3;
-              rr.right := (mainsizex shr 2) - 8;
-              txt := 'Already set' + chr(0);
-              mv_StaticH[7]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 57, system.maininstance, NIL);
+    kind := 'Arial' + chr(0); // smaller normal font
+    mv_FontH[2] := CreateFont(14, 0, 0, 0, 0, 0, 0, 0, ANSI_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+      DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
 
-              // the sunken border around the magic color list
-              z := WS_CHILD or WS_VISIBLE or SS_SUNKEN;
-              magicx := (mainsizex shr 1 - 42) and $FFFC;
-              magicy := 160;
-              rr.left := 8; rr.right := magicx + 2;
-              rr.top := 29; rr.bottom := magicy + 2;
-              mv_StaticH[0]:= CreateWindow(@kind[1], NIL, z,
-                                rr.left, rr.top, rr.right, rr.bottom,
-                                window, 58, system.maininstance, NIL);
+    // Create static interface strings...
+    kind := 'STATIC' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or SS_ETCHEDHORZ;
+    rr.left := 0; rr.right := mainsizex + 8;
+    rr.top := 0; rr.bottom := 1;
+    mv_StaticH[1]:= CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 51, system.maininstance, NIL);
 
-              // Create the color block, to show which color is selected
-              z := WS_CHILD or WS_VISIBLE or SS_CENTER;
-              rr.left := mainsizex - 32; rr.right := 24;
-              rr.top := 64; rr.bottom := 24;
-              txt := chr(0);
-              mv_ColorBlockH := CreateWindow(@kind[1], @txt[1], z,
-                                  rr.left, rr.top, rr.right, rr.bottom,
-                                  window, 50, system.maininstance, NIL);
+    z := WS_CHILD or WS_VISIBLE or SS_LEFT;
+    rr.left := 8; rr.right := mainsizex - 8;
+    rr.top := 8; rr.bottom := 16;
+    txt := 'Preset palette' + chr(0);
+    mv_StaticH[2]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 52, system.maininstance, NIL);
 
-              // Create the magic color list, for color presets
-              kind := magicclass;
-              z := WS_CHILD or WS_VISIBLE;
-              rr.left := 9; rr.right := magicx;
-              rr.top := 30; rr.bottom := magicy;
-              mv_ListH[1] := CreateWindow(@kind[1], NIL, z,
-                             rr.left, rr.top, rr.right, rr.bottom,
-                             window, 59, system.maininstance, NIL);
-              with bminfo.bmiheader do begin
-               bisize := sizeof(bminfo.bmiheader);
-               biwidth := magicx;
-               biheight := -magicy;
-               bisizeimage := 0; biplanes := 1;
-               bibitcount := 24; bicompression := bi_rgb;
-               biclrused := 0; biclrimportant := 0;
-               bixpelspermeter := 28000; biypelspermeter := 28000;
+    rr.left := 8; rr.right := mainsizex - 8;
+    rr.top := mainsizey - 132; rr.bottom := 16;
+    txt := 'Output palette size: 256 colors' + chr(0);
+    mv_StaticH[3]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 53, system.maininstance, NIL);
+
+    rr.left := 8; rr.right := (mainsizex shr 1) - 8;
+    rr.top := mainsizey - 80; rr.bottom := 16;
+    txt := 'Colorspace:' + chr(0);
+    mv_StaticH[4]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 54, system.maininstance, NIL);
+
+    rr.left := mainsizex shr 1; rr.right := (mainsizex shr 1) - 8;
+    txt := 'Dithering:' + chr(0);
+    mv_StaticH[5]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 55, system.maininstance, NIL);
+
+    rr.top := 42; rr.bottom := 20;
+    rr.left := mainsizex shr 1; rr.right := (mainsizex shr 2) - 8;
+    txt := 'Selected: 0' + chr(0);
+    mv_StaticH[6]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 56, system.maininstance, NIL);
+
+    // Toggle visibility when colorpicking and color already set.
+    z := WS_CHILD or SS_CENTER;
+    rr.top := 10;
+    rr.left := (mainsizex shr 2) * 3;
+    rr.right := (mainsizex shr 2) - 8;
+    txt := 'Already set' + chr(0);
+    mv_StaticH[7]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 57, system.maininstance, NIL);
+
+    // The sunken border around the magic color list.
+    z := WS_CHILD or WS_VISIBLE or SS_SUNKEN;
+    magicx := (mainsizex shr 1 - 42) and $FFFC;
+    magicy := 160;
+    rr.left := 8; rr.right := magicx + 2;
+    rr.top := 29; rr.bottom := magicy + 2;
+    mv_StaticH[0]:= CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 58, system.maininstance, NIL);
+
+    // Create the color block, to show which color is selected.
+    z := WS_CHILD or WS_VISIBLE or SS_CENTER;
+    rr.left := mainsizex - 32; rr.right := 24;
+    rr.top := 64; rr.bottom := 24;
+    txt := chr(0);
+    mv_ColorBlockH := CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 50, system.maininstance, NIL);
+
+    // Create the magic color list, for color presets.
+    kind := magicclass;
+    z := WS_CHILD or WS_VISIBLE;
+    rr.left := 9; rr.right := magicx;
+    rr.top := 30; rr.bottom := magicy;
+    mv_ListH[1] := CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 59, system.maininstance, NIL);
+    with bminfo.bmiheader do begin
+     bisize := sizeof(bminfo.bmiheader);
+     biwidth := magicx;
+     biheight := -magicy;
+     bisizeimage := 0; biplanes := 1;
+     bibitcount := 24; bicompression := bi_rgb;
+     biclrused := 0; biclrimportant := 0;
+     bixpelspermeter := 28000; biypelspermeter := 28000;
+    end;
+    dword(bminfo.bmicolors) := 0;
+    mv_DC := getDC(mv_ListH[1]);
+    mv_ListBuffyDC := createCompatibleDC(mv_DC);
+    ReleaseDC(mv_ListH[1], mv_DC);
+    mv_ListBuffyHandle := createDIBsection(mv_ListBuffyDC, bminfo, dib_rgb_colors, mv_ListBuffy, 0, 0);
+    mv_OldListBuffyHandle := selectObject(mv_ListBuffyDC, mv_ListBuffyHandle);
+    DrawMagicList;
+
+    // Create controls.
+    kind := 'SCROLLBAR' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or SBS_VERT;
+    rr.left := mainsizex shr 1 - 24; rr.right := 16;
+    rr.top := 29; rr.bottom := magicy + 2;
+    mv_SliderH[1]:= CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 41, system.maininstance, NIL);
+
+    kind := 'EDIT' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or ES_AUTOHSCROLL;
+    rr.left := (mainsizex shr 1) - 2;
+    rr.right := (mainsizex shr 2) - 8 + 4;
+    rr.top := 64; rr.bottom := 24;
+    mv_EditH[1] := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 40, system.maininstance, NIL);
+
+    rr.left := (mainsizex shr 2) * 3; rr.right := 32;
+    mv_EditH[2] := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 39, system.maininstance, NIL);
+
+    kind := 'BUTTON' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX or BS_PUSHLIKE;
+    txt := 'From image' + chr(0);
+    rr.right := (mainsizex shr 2) - 8;
+    rr.top := 30; rr.bottom := 24;
+    mv_ButtonH[1]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 61, system.maininstance, NIL);
+
+    z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_PUSHBUTTON;
+    txt := 'Apply' + chr(0);
+    rr.left := (mainsizex shr 1);
+    rr.right := mainsizex shr 2 - 8;
+    rr.top := 96;
+    mv_ButtonH[2]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 62, system.maininstance, NIL);
+
+    txt := 'Delete' + chr(0);
+    rr.left := mainsizex - rr.right - 8;
+    mv_ButtonH[3]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 63, system.maininstance, NIL);
+
+    txt := 'Compress!' + chr(0);
+    rr.left := mainsizex shr 1; rr.right := rr.left - 8;
+    rr.top := 23 + magicy - rr.bottom;
+    mv_ButtonH[4]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 64, system.maininstance, NIL);
+
+    kind := 'SCROLLBAR' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or SBS_HORZ;
+    rr.left := 8; rr.right := mainsizex - 16;
+    rr.top := mainsizey - 110; rr.bottom := 16;
+    mv_SliderH[2]:= CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 42, system.maininstance, NIL);
+
+    kind := 'BUTTON' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX;
+    txt := 'Favor flat colors' + chr(0);
+    rr.left := mainsizex shr 1; rr.right := mainsizex - rr.left - 8;
+    rr.top := mainsizey - 24; rr.bottom := 16;
+    mv_ButtonH[5]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 65, system.maininstance, NIL);
+
+    txt := 'Preserve contrast' + chr(0);
+    rr.left := 8; rr.right := mainsizex shr 1 - 8;
+    mv_ButtonH[6]:= CreateWindow(@kind[1], @txt[1], z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 66, system.maininstance, NIL);
+
+    kind := 'COMBOBOX' + chr(0);
+    z := WS_CHILD or WS_VISIBLE or CBS_DROPDOWNLIST;
+    rr.left := 8; rr.right := (mainsizex shr 1) - 16;
+    rr.top := mainsizey - 60; rr.bottom := 256;
+    mv_ListH[3] := CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 68, system.maininstance, NIL);
+
+    rr.left := mainsizex shr 1; rr.right := (mainsizex shr 1) - 8;
+    mv_ListH[2] := CreateWindow(@kind[1], NIL, z,
+      rr.left, rr.top, rr.right, rr.bottom,
+      window, 67, system.maininstance, NIL);
+
+    // Initialize the controls.
+    slideinfo.cbSize := sizeof(slideinfo);
+    slideinfo.fMask := SIF_ALL;
+    slideinfo.nMin := 0;
+    slideinfo.nMax := 255;
+    slideinfo.nPage := 8;
+    slideinfo.nPos := 0;
+    SetScrollInfo(mv_SliderH[1], SB_CTL, @slideinfo, TRUE);
+
+    slideinfo.nMin := 2;
+    slideinfo.nPos := 256;
+    slideinfo.nPage := 16;
+    slideinfo.nMax := slideinfo.nPos + slideinfo.nPage - 1;
+    SetScrollInfo(mv_SliderH[2], SB_CTL, @slideinfo, TRUE);
+
+    for i := 2 to 5 do SendMessageA(mv_StaticH[i], WM_SETFONT, longint(mv_FontH[1]), 1);
+    for i := 6 to 7 do SendMessageA(mv_StaticH[i], WM_SETFONT, longint(mv_FontH[2]), 1);
+    for i := 1 to 6 do SendMessageA(mv_ButtonH[i], WM_SETFONT, longint(mv_FontH[2]), 0);
+    SendMessageA(mv_ButtonH[4], WM_SETFONT, longint(mv_FontH[1]), 0);
+
+    for i := 1 to 4 do EnableWindow(mv_ButtonH[i], FALSE);
+    SendMessageA(mv_ButtonH[6], BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageA(mv_EditH[1], EM_SETLIMITTEXT, 6, 0);
+    SendMessageA(mv_EditH[1], WM_SETFONT, longint(mv_FontH[1]), 0);
+    SendMessageA(mv_EditH[2], EM_SETLIMITTEXT, 2, 0);
+    SendMessageA(mv_EditH[2], WM_SETFONT, longint(mv_FontH[1]), 0);
+    txt := 'FF' + chr(0);
+    SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@txt[1]));
+    for i := 2 to 3 do SendMessageA(mv_ListH[i], WM_SETFONT, longint(mv_FontH[2]), 0);
+    for i := 0 to high(dithername) do begin
+     txt := dithername[i] + chr(0);
+     SendMessageA(mv_ListH[2], CB_ADDSTRING, 0, ptrint(@txt[1]));
+    end;
+    for i := 0 to high(colorspacename) do begin
+     txt := colorspacename[i] + chr(0);
+     SendMessageA(mv_ListH[3], CB_ADDSTRING, 0, ptrint(@txt[1]));
+    end;
+    for i := 2 to 3 do SendMessageA(mv_ListH[i], CB_SETCURSEL, 1, 0);
+    mv_CBBrushH := CreateSolidBrush(0);
+   end;
+
+   wm_Command:
+   begin
+    case word(wepu) of
+      39:
+      if (wepu shr 16 = EN_CHANGE) then ValidateAlfaco;
+
+      40:
+      if (wepu shr 16 = EN_CHANGE) then begin
+       ValidateHexaco;
+       InvalidateRect(mv_ColorBlockH, NIL, TRUE);
+      end;
+
+      // GUI button: Pick a color from the image
+      61:
+      begin
+       if SendMessageA(mv_ButtonH[1], bm_getcheck, 0, 0) = BST_CHECKED
+       then colorpicking := TRUE else colorpicking := FALSE;
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+      end;
+
+      // GUI button: Apply
+      62:
+      begin
+       pe[pe_used].status := 2;
+       byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
+       i := valhex(kind);
+       pe[pe_used].colo.r := byte(i shr 16);
+       pe[pe_used].colo.g := byte(i shr 8);
+       pe[pe_used].colo.b := byte(i);
+       byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 3, ptrint(@kind[1]));
+       i := valhex(kind);
+       pe[pe_used].colo.a := i;
+       DrawMagicList;
+       EnableWindow(mv_ButtonH[3], TRUE);
+       colorpicking := FALSE;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+      end;
+
+      // GUI button: Delete
+      63:
+      begin
+       ClearPE(pe_used, pe_used);
+       DrawMagicList;
+       EnableWindow(mv_ButtonH[3], FALSE);
+       colorpicking := FALSE;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+      end;
+
+      // GUI button: Compress!
+      64:
+      begin
+       colorpicking := FALSE;
+       compressorthreadID := 1;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+       GrabConfig; // get the option.settings
+       // Get to work!
+       compressing := TRUE;
+
+       // Color compression is done in a new thread...
+       compressorthreadhandle := beginthread
+         (@CompressColors, NIL, compressorthreadID);
+
+       // Meanwhile this prime thread launches FunBox, a modal dialog box,
+       // and stops code execution until the box is closed. The FunBox
+       // displays palette changes in real time to entertain the user.
+       // It also has a "Cancel"-button.
+       // Code execution continues when:
+       // 1. Color compression is done (or fails), which sends a WM_CLOSE
+       //    message to the Funbox.
+       // 2. The user aborts, which sends a WM_CLOSE to the Funbox and sets
+       //    compressing to FALSE. The compression work thread quits when it
+       //    sees the flag changed.
+       DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @FunProc);
+       // To avoid winhandle leaking...
+       CloseHandle(compressorthreadhandle);
+
+       // Only the main thread can create a persistent window, so the
+       // reduced-color image has been stuck in rendimu^.
+       if rendimu.image <> NIL then begin
+        // Find the first free view slot.
+        i := 1;
+        while (viewdata[i].winhandu <> 0) and (i < high(viewdata)) do inc(i);
+        // And show the results!
+        SpawnView(i, @rendimu);
+        txt := 'Result - ' + strdec(length(viewdata[i].bmpdata.palette)) + ' colors';
+        if viewdata[i].alpha = 4 then txt := txt + ' with alpha';
+        txt := txt + ', ' + colorspacename[option.colorspace] + ', ' + dithername[option.dithering] + chr(0);
+        SendMessageA(viewdata[i].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
+       end;
+       compressorthreadID := 0;
+      end;
+
+      // Command: Scrap the source image's alpha channel
+      88:
+      if viewdata[0].winhandu = 0 then begin
+       txt := 'There is no source image.' + chr(0);
+       MessageBoxA(window, @txt[1], NIL, MB_OK);
+      end
+      else begin
+       if viewdata[0].alpha <> 4 then begin
+        txt := 'Source has no alpha.' + chr(0);
+        MessageBoxA(window, @txt[1], NIL, MB_OK);
+       end
+       else begin
+        // build a new 24-bit image from previous 32-bit
+        z := viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey;
+        getmem(objp, z * 3);
+        while z <> 0 do begin
+         dec(z);
+         RGBarray(objp^)[z].r := RGBAarray(viewdata[0].bmpdata.image^)[z].r;
+         RGBarray(objp^)[z].g := RGBAarray(viewdata[0].bmpdata.image^)[z].g;
+         RGBarray(objp^)[z].b := RGBAarray(viewdata[0].bmpdata.image^)[z].b;
+        end;
+        freemem(viewdata[0].bmpdata.image);
+        viewdata[0].bmpdata.image := objp;
+        objp := NIL;
+        // refresh all secondary image data
+        viewdata[0].alpha := 3;
+        setlength(viewdata[0].bmpdata.palette, 0);
+        MakeHistogram(0);
+        DetectFlats;
+        RedrawView(0);
+        // adjust the view's name
+        byte(txt[0]) := GetWindowText(viewdata[0].winhandu, @txt[1], 255);
+        z := length(txt);
+        while (z <> 0) and (txt[z] <> '-') do dec(z);
+        txt := copy(txt, 1, z) + ' ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors' + chr(0);
+        SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
+       end;
+      end;
+
+      // File:Batch process images
+      89:
+      begin
+       colorpicking := FALSE;
+       compressorthreadID := 1;
+       batchprocess := TRUE;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+       GrabConfig; // get the option.settings
+
+       kind := 'PNG or BMP' + chr(0) + '*.png;*.bmp' + chr(0) + chr(0);
+       filulist := allocmem(65536); // pre-zeroed memalloc
+       fillbyte(openfilurec, sizeof(openfilurec), 0);
+       with openfilurec do begin
+        lStructSize := 76; // sizeof gives incorrect result?
+        hwndOwner := window;
+        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+        nFilterIndex := 1;
+        lpstrFile := filulist; nMaxFile := 65536;
+        lpstrFileTitle := NIL; lpstrInitialDir := NIL; lpstrTitle := NIL;
+        Flags := OFN_FILEMUSTEXIST or OFN_ALLOWMULTISELECT or OFN_EXPLORER;
+       end;
+
+       if GetOpenFileNameA(@openfilurec) then begin
+        // Count the number of returned strings.
+        z := 0; openfilurec.nmaxfile := 0;
+        while word((filulist + z)^) <> 0 do begin
+         if byte((filulist + z)^) = 0 then inc(openfilurec.nmaxfile);
+         inc(z);
+        end;
+
+        // Display a confirmation box.
+        if openfilurec.nmaxfile = 0 then begin
+         txt := 'The 1 file';
+         inc(openfilurec.nmaxfile);
+        end else
+         txt := 'The ' + strdec(openfilurec.nmaxfile) + ' files';
+        txt := txt + ' you selected will be color-reduced and overwritten using the current settings.' + chr(0);
+        kind := 'Batch processing' + chr(0);
+
+        if MessageBoxA(window, @txt[1], @kind[1], MB_OKCANCEL) = IDOK then begin
+         // Grab the files' directory.
+         z := 0;
+         while byte((filulist + z)^) <> 0 do inc(z);
+         move(filulist^, kind[1], z);
+         byte(kind[0]) := z;
+         inc(z);
+
+         // If there was just one file, the filename and directory are
+         // 1 string; otherwise the directory is its own string which must
+         // end with a backslash.
+         if openfilurec.nmaxfile > 1 then
+          if kind[length(kind)] <> '\' then kind := kind + '\';
+
+         // Grab the filenames and process them.
+         while openfilurec.nmaxfile <> 0 do begin
+          txt := '';
+          while byte((filulist + z)^) <> 0 do begin
+           txt := txt + char((filulist + z)^);
+           inc(z);
+          end;
+          inc(z);
+
+          // open the image
+          strutsi := kind + txt;
+          assign(f, strutsi);
+          filemode := 0; reset(f, 1); // read-only
+          i := IOresult; // problem opening the file?
+          if i <> 0 then begin
+           txt := errortxt(i) + chr(0);
+           MessageBoxA(window, @txt[1], NIL, MB_OK);
+          end
+          else begin
+           j := filesize(f);
+           getmem(objp, j);
+           // Read file into memory.
+           blockread(f, objp^, j);
+           close(f);
+           // Unpack image into tempbmp.
+           i := mcg_LoadGraphic(objp, j, @tempbmp);
+           freemem(objp); objp := NIL;
+           if i <> 0 then begin
+            txt := mcg_errortxt + chr(0);
+            MessageBoxA(window, @txt[1], NIL, MB_OK)
+           end
+           else begin
+            // Stick the unpacked graphic into viewdata[0].
+            SpawnView(0, @tempbmp);
+            // Go to town on the image!
+            compressing := TRUE;
+            compressorthreadhandle := beginthread
+              (@CompressColors, NIL, compressorthreadID);
+            strutsi := '(' + strdec(openfilurec.nmaxfile) + ') ' + strutsi;
+            DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @FunProc);
+
+            // To avoid winhandle leaking...
+            CloseHandle(compressorthreadhandle);
+
+            // The compressor thread put the result in rendimu^.
+            if rendimu.image <> NIL then begin
+             // Display the result very briefly.
+             SpawnView(1, @rendimu);
+             // Try to open a temp output file.
+             assign(f, kind + '#$T3MP$#.imu');
+             filemode := 1; rewrite(f, 1); // write-only
+             i := IOresult;
+             if i <> 0 then begin
+              txt := errortxt(i) + chr(0);
+              MessageBoxA(window, @txt[1], NIL, MB_OK);
+             end
+             else begin
+              // Squash the whitespace from the image.
+              fillbyte(rendimu, sizeof(rendimu), 0);
+              PackView(1, 1, @rendimu);
+              rendimu.sizex := viewdata[1].bmpdata.sizex;
+              // Compress rendimu^ into objp.
+              i := mcg_MemorytoPNG(@rendimu, @objp, @j);
+              if i <> 0 then begin
+               txt := mcg_errortxt + chr(0);
+               MessageBoxA(window, @txt[1], NIL, MB_OK);
+              end
+              else begin
+               // Write the PNG datastream into the file.
+               blockwrite(f, objp^, j);
+               i := IOresult;
+               if i <> 0 then begin
+                txt := errortxt(i) + chr(0);
+                MessageBoxA(window, @txt[1], NIL, MB_OK);
+               end;
+               close(f);
+               assign(f, kind + txt);
+               erase(f);
+               assign(f, kind + '#$T3MP$#.imu');
+               rename(f, kind + txt);
               end;
-              dword(bminfo.bmicolors) := 0;
-              mv_DC := getDC(mv_ListH[1]);
-              mv_ListBuffyDC := createCompatibleDC(mv_DC);
-              ReleaseDC(mv_ListH[1], mv_DC);
-              mv_ListBuffyHandle := createDIBsection(mv_ListBuffyDC, bminfo, dib_rgb_colors, mv_ListBuffy, 0, 0);
-              mv_OldListBuffyHandle := selectObject(mv_ListBuffyDC, mv_ListBuffyHandle);
-              DrawMagicList;
-
-              // Create controls
-              kind := 'SCROLLBAR' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or SBS_VERT;
-              rr.left := mainsizex shr 1 - 24; rr.right := 16;
-              rr.top := 29; rr.bottom := magicy + 2;
-              mv_SliderH[1]:= CreateWindow(@kind[1], NIL, z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 41, system.maininstance, NIL);
-
-              kind := 'EDIT' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or ES_AUTOHSCROLL;
-              rr.left := (mainsizex shr 1) - 2;
-              rr.right := (mainsizex shr 2) - 8 + 4;
-              rr.top := 64; rr.bottom := 24;
-              mv_EditH[1] := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
-                             rr.left, rr.top, rr.right, rr.bottom,
-                             window, 40, system.maininstance, NIL);
-
-              rr.left := (mainsizex shr 2) * 3; rr.right := 32;
-              mv_EditH[2] := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
-                             rr.left, rr.top, rr.right, rr.bottom,
-                             window, 39, system.maininstance, NIL);
-
-              kind := 'BUTTON' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX or BS_PUSHLIKE;
-              txt := 'From image' + chr(0);
-              rr.right := (mainsizex shr 2) - 8;
-              rr.top := 30; rr.bottom := 24;
-              mv_ButtonH[1]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 61, system.maininstance, NIL);
-
-              z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_PUSHBUTTON;
-              txt := 'Apply' + chr(0);
-              rr.left := (mainsizex shr 1);
-              rr.right := mainsizex shr 2 - 8;
-              rr.top := 96;
-              mv_ButtonH[2]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 62, system.maininstance, NIL);
-
-              txt := 'Delete' + chr(0);
-              rr.left := mainsizex - rr.right - 8;
-              mv_ButtonH[3]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 63, system.maininstance, NIL);
-
-              txt := 'Compress!' + chr(0);
-              rr.left := mainsizex shr 1; rr.right := rr.left - 8;
-              rr.top := 23 + magicy - rr.bottom;
-              mv_ButtonH[4]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 64, system.maininstance, NIL);
-
-              kind := 'SCROLLBAR' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or SBS_HORZ;
-              rr.left := 8; rr.right := mainsizex - 16;
-              rr.top := mainsizey - 110; rr.bottom := 16;
-              mv_SliderH[2]:= CreateWindow(@kind[1], NIL, z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 42, system.maininstance, NIL);
-
-              kind := 'BUTTON' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX;
-              txt := 'Favor flat colors' + chr(0);
-              rr.left := mainsizex shr 1; rr.right := mainsizex - rr.left - 8;
-              rr.top := mainsizey - 24; rr.bottom := 16;
-              mv_ButtonH[5]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 65, system.maininstance, NIL);
-
-              txt := 'Preserve contrast' + chr(0);
-              rr.left := 8; rr.right := mainsizex shr 1 - 8;
-              mv_ButtonH[6]:= CreateWindow(@kind[1], @txt[1], z,
-                              rr.left, rr.top, rr.right, rr.bottom,
-                              window, 66, system.maininstance, NIL);
-
-              kind := 'COMBOBOX' + chr(0);
-              z := WS_CHILD or WS_VISIBLE or CBS_DROPDOWNLIST;
-              rr.left := 8; rr.right := (mainsizex shr 1) - 16;
-              rr.top := mainsizey - 60; rr.bottom := 256;
-              mv_ListH[3] := CreateWindow(@kind[1], NIL, z,
-                             rr.left, rr.top, rr.right, rr.bottom,
-                             window, 68, system.maininstance, NIL);
-
-              rr.left := mainsizex shr 1; rr.right := (mainsizex shr 1) - 8;
-              mv_ListH[2] := CreateWindow(@kind[1], NIL, z,
-                             rr.left, rr.top, rr.right, rr.bottom,
-                             window, 67, system.maininstance, NIL);
-
-              // Initialize the controls
-              slideinfo.cbSize := sizeof(slideinfo);
-              slideinfo.fMask := SIF_ALL;
-              slideinfo.nMin := 0;
-              slideinfo.nMax := 255;
-              slideinfo.nPage := 8;
-              slideinfo.nPos := 0;
-              SetScrollInfo(mv_SliderH[1], SB_CTL, @slideinfo, TRUE);
-              slideinfo.nMin := 2;
-              slideinfo.nPos := 256;
-              slideinfo.nPage := 16;
-              slideinfo.nMax := slideinfo.nPos + slideinfo.nPage - 1;
-              SetScrollInfo(mv_SliderH[2], SB_CTL, @slideinfo, TRUE);
-              for ivar := 2 to 5 do SendMessageA(mv_StaticH[ivar], WM_SETFONT, longint(mv_FontH[1]), 1);
-              for ivar := 6 to 7 do SendMessageA(mv_StaticH[ivar], WM_SETFONT, longint(mv_FontH[2]), 1);
-              for ivar := 1 to 6 do SendMessageA(mv_ButtonH[ivar], WM_SETFONT, longint(mv_FontH[2]), 0);
-              SendMessageA(mv_ButtonH[4], WM_SETFONT, longint(mv_FontH[1]), 0);
-              for ivar := 1 to 4 do EnableWindow(mv_ButtonH[ivar], FALSE);
-              SendMessageA(mv_ButtonH[6], BM_SETCHECK, BST_CHECKED, 0);
-              SendMessageA(mv_EditH[1], EM_SETLIMITTEXT, 6, 0);
-              SendMessageA(mv_EditH[1], WM_SETFONT, longint(mv_FontH[1]), 0);
-              SendMessageA(mv_EditH[2], EM_SETLIMITTEXT, 2, 0);
-              SendMessageA(mv_EditH[2], WM_SETFONT, longint(mv_FontH[1]), 0);
-              txt := 'FF' + chr(0);
-              SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@txt[1]));
-              for ivar := 2 to 3 do SendMessageA(mv_ListH[ivar], WM_SETFONT, longint(mv_FontH[2]), 0);
-              for ivar := 0 to high(dithername) do begin
-               txt := dithername[ivar] + chr(0);
-               SendMessageA(mv_ListH[2], CB_ADDSTRING, 0, ptrint(@txt[1]));
-              end;
-              for ivar := 0 to high(colorspacename) do begin
-               txt := colorspacename[ivar] + chr(0);
-               SendMessageA(mv_ListH[3], CB_ADDSTRING, 0, ptrint(@txt[1]));
-              end;
-              for ivar := 2 to 3 do SendMessageA(mv_ListH[ivar], CB_SETCURSEL, 1, 0);
-              mv_CBBrushH := CreateSolidBrush(0);
              end;
-  wm_Command: begin
-               case word(wepu) of
-                39: if (wepu shr 16 = EN_CHANGE) then ValidateAlfaco;
-                40: if (wepu shr 16 = EN_CHANGE) then begin
-                     ValidateHexaco;
-                     InvalidateRect(mv_ColorBlockH, NIL, TRUE);
-                    end;
-                // GUI button:Pick a color from the image
-                61: begin
-                     if SendMessageA(mv_ButtonH[1], bm_getcheck, 0, 0) = BST_CHECKED
-                     then colorpicking := TRUE else colorpicking := FALSE;
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                    end;
-                // GUI button:Apply
-                62: begin
-                     pe[pe_used].status := 2;
-                     byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
-                     ivar := valhex(kind);
-                     pe[pe_used].colo.r := byte(ivar shr 16);
-                     pe[pe_used].colo.g := byte(ivar shr 8);
-                     pe[pe_used].colo.b := byte(ivar);
-                     byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 3, ptrint(@kind[1]));
-                     ivar := valhex(kind);
-                     pe[pe_used].colo.a := ivar;
-                     DrawMagicList;
-                     EnableWindow(mv_ButtonH[3], TRUE);
-                     colorpicking := FALSE;
-                     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                    end;
-                // GUI button:Delete
-                63: begin
-                     ClearPE(pe_used, pe_used);
-                     DrawMagicList;
-                     EnableWindow(mv_ButtonH[3], FALSE);
-                     colorpicking := FALSE;
-                     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                    end;
-                // GUI button:Compress!
-                64: begin
-                     colorpicking := FALSE; compressorthreadID := 1;
-                     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                     GrabConfig; // get the option.settings
-                     // get to work!
-                     compressing := TRUE;
 
-                     // Color compression is done in a new thread...
-                     compressorthreadhandle := beginthread
-                      (@CompressColors, NIL, compressorthreadID);
-                     // Meanwhile this prime thread launches FunBox, a modal
-                     // dialog box, and stops code execution until the box is
-                     // closed. The FunBox displays palette changes in real
-                     // time to entertain the user. It also has a "Cancel"-
-                     // button.
-                     // Code execution continues when:
-                     // 1. Color compression is done (or fails), which sends
-                     //    a WM_CLOSE message to the Funbox.
-                     // 2. The user aborts, which sends a WM_CLOSE to the
-                     //    Funbox and sets compressing to FALSE. The
-                     //    compression work thread quits when it sees the
-                     //    flag changed.
-                     DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @FunProc);
-                     // To avoid winhandle leaking...
-                     CloseHandle(compressorthreadhandle);
+             // Clean up
+             close(f);
+             while IOresult <> 0 do ; // flush
+             SendMessageA(viewdata[1].winhandu, WM_CLOSE, 0, 0);
+             freemem(objp); objp := NIL;
+            end;
 
-                     // Only the main thread can create a persistent window,
-                     // so the reduced-color image has been stuck in rendimu^
-                     if rendimu.image <> NIL then begin
-                      // find the first free view slot
-                      ivar := 1;
-                      while (viewdata[ivar].winhandu <> 0) and (ivar < high(viewdata)) do inc(ivar);
-                      // and show the results!
-                      SpawnView(ivar, @rendimu);
-                      txt := 'Result - ' + strdec(length(viewdata[ivar].bmpdata.palette)) + ' colors';
-                      if viewdata[ivar].alpha = 4 then txt := txt + ' with alpha';
-                      txt := txt + ', ' + colorspacename[option.colorspace] + ', ' + dithername[option.dithering] + chr(0);
-                      SendMessageA(viewdata[ivar].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
-                     end;
-                     compressorthreadID := 0;
+           end;
+           SendMessageA(viewdata[0].winhandu, WM_CLOSE, 0, 0);
+          end;
 
-                    end;
-                // Command:Scrap the source image's alpha channel
-                88: if viewdata[0].winhandu = 0 then begin
-                     txt := 'There is no source image.' + chr(0);
-                     MessageBoxA(window, @txt[1], NIL, MB_OK);
-                    end else begin
-                     if viewdata[0].alpha <> 4 then begin
-                      txt := 'Source has no alpha.' + chr(0);
-                      MessageBoxA(window, @txt[1], NIL, MB_OK);
-                     end else begin
-                      // build a new 24-bit image from previous 32-bit
-                      z := viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey;
-                      getmem(objp, z * 3);
-                      while z <> 0 do begin
-                       dec(z);
-                       RGBarray(objp^)[z].r := RGBAarray(viewdata[0].bmpdata.image^)[z].r;
-                       RGBarray(objp^)[z].g := RGBAarray(viewdata[0].bmpdata.image^)[z].g;
-                       RGBarray(objp^)[z].b := RGBAarray(viewdata[0].bmpdata.image^)[z].b;
-                      end;
-                      freemem(viewdata[0].bmpdata.image);
-                      viewdata[0].bmpdata.image := objp;
-                      objp := NIL;
-                      // refresh all secondary image data
-                      viewdata[0].alpha := 3;
-                      setlength(viewdata[0].bmpdata.palette, 0);
-                      MakeHistogram(0);
-                      DetectFlats;
-                      RedrawView(0);
-                      // adjust the view's name
-                      byte(txt[0]) := GetWindowText(viewdata[0].winhandu, @txt[1], 255);
-                      z := length(txt);
-                      while (z <> 0) and (txt[z] <> '-') do dec(z);
-                      txt := copy(txt, 1, z) + ' ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors' + chr(0);
-                      SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
-                     end;
-                    end;
-                // File:Batch process images
-                89: begin
-                     colorpicking := FALSE; compressorthreadID := 1;
-                     batchprocess := TRUE;
-                     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                     GrabConfig; // get the option.settings
+          dec(openfilurec.nmaxfile);
+         end;
+        end;
 
-                     kind := 'PNG or BMP' + chr(0) + '*.png;*.bmp' + chr(0) + chr(0);
-                     filulist := allocmem(65536); // pre-zeroed memalloc
-                     fillbyte(openfilurec, sizeof(openfilurec), 0);
-                     with openfilurec do begin
-                      lStructSize := 76; // sizeof gives incorrect result?
-                      hwndOwner := window;
-                      lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-                      nFilterIndex := 1;
-                      lpstrFile := filulist; nMaxFile := 65536;
-                      lpstrFileTitle := NIL; lpstrInitialDir := NIL; lpstrTitle := NIL;
-                      Flags := OFN_FILEMUSTEXIST or OFN_ALLOWMULTISELECT or OFN_EXPLORER;
-                     end;
-                     if GetOpenFileNameA(@openfilurec) then begin
-                      // count the number of returned strings
-                      z := 0; openfilurec.nmaxfile := 0;
-                      while word((filulist + z)^) <> 0 do begin
-                       if byte((filulist + z)^) = 0 then inc(openfilurec.nmaxfile);
-                       inc(z);
-                      end;
-                      // display a confirmation box
-                      if openfilurec.nmaxfile = 0 then begin
-                       txt := 'The 1 file'; inc(openfilurec.nmaxfile);
-                      end else txt := 'The ' + strdec(openfilurec.nmaxfile) + ' files';
-                      txt := txt + ' you selected will be color-reduced and overwritten using the current settings.' + chr(0);
-                      kind := 'Batch processing' + chr(0);
-                      if MessageBoxA(window, @txt[1], @kind[1], MB_OKCANCEL) = IDOK then begin
-                       // grab the files' directory
-                       z := 0;
-                       while byte((filulist + z)^) <> 0 do inc(z);
-                       move(filulist^, kind[1], z);
-                       byte(kind[0]) := z;
-                       inc(z);
-                       // if there was just one file, the filename and
-                       // directory are 1 string; otherwise the directory is
-                       // its own string which must end with a backslash.
-                       if openfilurec.nmaxfile > 1 then
-                        if kind[length(kind)] <> '\' then kind := kind + '\';
-                       // grab the filenames and process them
-                       while openfilurec.nmaxfile <> 0 do begin
-                        txt := '';
-                        while byte((filulist + z)^) <> 0 do begin
-                         txt := txt + char((filulist + z)^);
-                         inc(z);
-                        end;
-                        inc(z);
-                        // open the image
-                        strutsi := kind + txt;
-                        assign(f, strutsi);
-                        filemode := 0; reset(f, 1); // read-only
-                        ivar := IOresult; // problem opening the file?
-                        if ivar <> 0 then begin
-                         txt := errortxt(ivar) + chr(0);
-                         MessageBoxA(window, @txt[1], NIL, MB_OK);
-                        end else begin
-                         jvar := filesize(f);
-                         getmem(objp, jvar); // read file into memory
-                         blockread(f, objp^, jvar);
-                         close(f);
-                         // Unpack image into tempbmp
-                         ivar := mcg_LoadGraphic(objp, jvar, @tempbmp);
-                         freemem(objp); objp := NIL;
-                         if ivar <> 0 then begin
-                          txt := mcg_errortxt + chr(0);
-                          MessageBoxA(window, @txt[1], NIL, MB_OK)
-                         end else begin
-                          // stick the unpacked graphic into viewdata[0]
-                          SpawnView(0, @tempbmp);
-                          // go to town on the image!
-                          compressing := TRUE;
-                          compressorthreadhandle := beginthread
-                           (@CompressColors, NIL, compressorthreadID);
-                          strutsi := '(' + strdec(openfilurec.nmaxfile) + ') ' + strutsi;
-                          DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @FunProc);
-                          // To avoid winhandle leaking...
-                          CloseHandle(compressorthreadhandle);
+        kind := 'Batch processing' + chr(0);
+        txt := 'Processing complete.' + chr(0);
+        MessageBoxA(window, @txt[1], @kind[1], MB_OK);
+       end;
+       freemem(filulist); filulist := NIL;
+       batchprocess := FALSE;
+       compressorthreadID := 0;
+      end;
 
-                          // the compressor thread put the result in rendimu^
-                          if rendimu.image <> NIL then begin
-                           // display the result very briefly
-                           SpawnView(1, @rendimu);
-                           // try to open a temp output file
-                           assign(f, kind + '#$T3MP$#.imu');
-                           filemode := 1; rewrite(f, 1); // write-only
-                           ivar := IOresult;
-                           if ivar <> 0 then begin
-                            txt := errortxt(ivar) + chr(0);
-                            MessageBoxA(window, @txt[1], NIL, MB_OK);
-                           end else begin
-                            // Squash the whitespace from the image
-                            fillbyte(rendimu, sizeof(rendimu), 0);
-                            PackView(1, 1, @rendimu);
-                            rendimu.sizex := viewdata[1].bmpdata.sizex;
-                            // Compress rendimu^ into objp
-                            ivar := mcg_MemorytoPNG(@rendimu, @objp, @jvar);
-                            if ivar <> 0 then begin
-                             txt := mcg_errortxt + chr(0);
-                             MessageBoxA(window, @txt[1], NIL, MB_OK);
-                            end else begin
-                             // Write the PNG datastream into the file
-                             blockwrite(f, objp^, jvar);
-                             ivar := IOresult;
-                             if ivar <> 0 then begin
-                              txt := errortxt(ivar) + chr(0);
-                              MessageBoxA(window, @txt[1], NIL, MB_OK);
-                             end;
-                             close(f);
-                             assign(f, kind + txt);
-                             erase(f);
-                             assign(f, kind + '#$T3MP$#.imu');
-                             rename(f, kind + txt);
-                            end;
-                           end;
+      // File: Open a PNG or BMP file
+      90:
+      begin
+       kind := 'PNG or BMP' + chr(0) + '*.png;*.bmp' + chr(0) + chr(0);
+       txt := chr(0);
+       fillbyte(openfilurec, sizeof(openfilurec), 0);
+       with openfilurec do begin
+        lStructSize := 76; // sizeof gives incorrect result?
+        hwndOwner := window;
+        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+        nFilterIndex := 1;
+        lpstrFile := @txt[1]; nMaxFile := 255;
+        lpstrFileTitle := NIL; lpstrInitialDir := NIL; lpstrTitle := NIL;
+        Flags := OFN_FILEMUSTEXIST;
+       end;
 
-                           // Clean up
-                           close(f);
-                           while IOresult <> 0 do ;
-                           SendMessageA(viewdata[1].winhandu, WM_CLOSE, 0, 0);
-                           freemem(objp); objp := NIL;
-                          end;
+       if GetOpenFileNameA(@openfilurec) then begin
+        // We got a filename the user wants to open!
+        assign(f, openfilurec.lpstrfile);
+        filemode := 0; reset(f, 1); // read-only
+        i := IOresult; // problem opening the file?
+        if i <> 0 then begin
+         txt := errortxt(i) + chr(0);
+         MessageBoxA(window, @txt[1], NIL, MB_OK);
+        end
+        else begin
+         j := filesize(f);
+         getmem(objp, j); // read file into memory
+         blockread(f, objp^, j);
+         close(f);
+         i := mcg_LoadGraphic(objp, j, @tempbmp);
+         freemem(objp); objp := NIL;
+         if i <> 0 then begin
+          txt := mcg_errortxt + chr(0);
+          MessageBoxA(window, @txt[1], NIL, MB_OK)
+         end
+         else begin
+          SpawnView(0, @tempbmp);
+          // set the window name: filename, format, color count
+          txt := openfilurec.lpstrfile;
+          txt := copy(txt, openfilurec.nFileOffset + 1, length(txt) - openfilurec.nFileOffset);
+          if length(txt) > 130 then txt := copy(txt, 1, 128) + '...';
+          txt := 'Original: ' + txt + ' - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
+          if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
+          txt := txt + chr(0);
+          SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
+         end;
+         mcg_ForgetImage(@tempbmp);
+        end;
+       end;
+      end;
 
-                         end;
-                         SendMessageA(viewdata[0].winhandu, WM_CLOSE, 0, 0);
-                        end;
-                        dec(openfilurec.nmaxfile);
-                       end;
-                      end;
-                      kind := 'Batch processing' + chr(0);
-                      txt := 'Processing complete.' + chr(0);
-                      MessageBoxA(window, @txt[1], @kind[1], MB_OK);
-                     end;
-                     freemem(filulist); filulist := NIL;
-                     batchprocess := FALSE;
-                     compressorthreadID := 0;
-                    end;
-                // File:Open a PNG or BMP file
-                90: begin
-                     kind := 'PNG or BMP' + chr(0) + '*.png;*.bmp' + chr(0) + chr(0);
-                     txt := chr(0);
-                     fillbyte(openfilurec, sizeof(openfilurec), 0);
-                     with openfilurec do begin
-                      lStructSize := 76; // sizeof gives incorrect result?
-                      hwndOwner := window;
-                      lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-                      nFilterIndex := 1;
-                      lpstrFile := @txt[1]; nMaxFile := 255;
-                      lpstrFileTitle := NIL; lpstrInitialDir := NIL; lpstrTitle := NIL;
-                      Flags := OFN_FILEMUSTEXIST;
-                     end;
-                     if GetOpenFileNameA(@openfilurec) then begin
-                      // We got a filename the user wants to open!
-                      assign(f, openfilurec.lpstrfile);
-                      filemode := 0; reset(f, 1); // read-only
-                      ivar := IOresult; // problem opening the file?
-                      if ivar <> 0 then begin
-                       txt := errortxt(ivar) + chr(0);
-                       MessageBoxA(window, @txt[1], NIL, MB_OK);
-                      end else begin
-                       jvar := filesize(f);
-                       getmem(objp, jvar); // read file into memory
-                       blockread(f, objp^, jvar);
-                       close(f);
-                       ivar := mcg_LoadGraphic(objp, jvar, @tempbmp);
-                       freemem(objp); objp := NIL;
-                       if ivar <> 0 then begin
-                        txt := mcg_errortxt + chr(0);
-                        MessageBoxA(window, @txt[1], NIL, MB_OK)
-                       end else begin
-                        SpawnView(0, @tempbmp);
-                        // set the window name: filename, format, color count
-                        txt := openfilurec.lpstrfile;
-                        txt := copy(txt, openfilurec.nFileOffset + 1, length(txt) - openfilurec.nFileOffset);
-                        if length(txt) > 130 then txt := copy(txt, 1, 128) + '...';
-                        txt := 'Original: ' + txt + ' - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
-                        if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
-                        txt := txt + chr(0);
-                        SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
-                       end;
-                       mcg_ForgetImage(@tempbmp);
-                      end;
-                     end;
-                    end;
-                // Save view as PNG
-                91: if lastactiveview <> $FF then SaveViewAsPNG(lastactiveview);
-                // Load config
-                92: begin
-                     kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
-                     txt := chr(0); strutsi := homedir + chr(0);
-                     fillbyte(openfilurec, sizeof(openfilurec), 0);
-                     with openfilurec do begin
-                      lStructSize := 76; // sizeof gives incorrect result?
-                      hwndOwner := window;
-                      lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-                      nFilterIndex := 1;
-                      lpstrFile := @txt[1]; nMaxFile := 255;
-                      lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
-                      Flags := OFN_FILEMUSTEXIST or OFN_NOCHANGEDIR;
-                     end;
-                     if GetOpenFileNameA(@openfilurec) then begin
-                      ivar := ReadIni(openfilurec.lpstrfile);
-                      if ivar <> 0 then begin
-                       txt := errortxt(ivar) + chr(0);
-                       MessageBoxA(window, @txt[1], NIL, MB_OK);
-                      end;
-                     end;
-                    end;
-                // Save config
-                93: begin
-                     kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
-                     txt := chr(0); strutsi := homedir + chr(0);
-                     fillbyte(openfilurec, sizeof(openfilurec), 0);
-                     with openfilurec do begin
-                      lStructSize := 76; // sizeof gives incorrect result?
-                      hwndOwner := window;
-                      lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-                      nFilterIndex := 1;
-                      lpstrFile := @txt[1]; nMaxFile := 255;
-                      lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
-                      lpstrDefExt := @kind[31]; // "ini"
-                      Flags := OFN_NOCHANGEDIR or OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST;
-                     end;
-                     if GetSaveFileNameA(@openfilurec) then begin
-                      ivar := WriteIni(openfilurec.lpstrfile);
-                      if ivar <> 0 then begin
-                       txt := errortxt(ivar) + chr(0);
-                       MessageBoxA(window, @txt[1], NIL, MB_OK);
-                      end;
-                     end;
-                    end;
-                // Copy image to clipboard
-                94: if lastactiveview <> $FF then CopyView(lastactiveview);
-                // Command:Paste from clipboard
-                95: begin
-                     OpenClipboard(window);
-                     {i := 0;
-                     repeat
-                      i := EnumClipboardFormats(i);
-                      byte(strutsi[0]) := GetClipBoardFormatName(i, @strutsi[1], 255);
-                      writeln(i,'=',strutsi);
-                     until i = 0;}
+      // Save view as PNG
+      91:
+      if lastactiveview <> $FF then SaveViewAsPNG(lastactiveview);
 
-                     if IsClipboardFormatAvailable(CF_DIB) then begin
-                      cliphand := GetClipboardData(CF_DIB);
-                      objp := GlobalLock(cliphand);
-                      ivar := mcg_BMPtoMemory(objp, @tempbmp);
-                      GlobalUnlock(cliphand);
-                      if ivar <> 0 then begin
-                       strutsi := mcg_errortxt + chr(0);
-                       MessageBoxA(mv_MainWinH, @strutsi[1], NIL, MB_OK);
-                      end else begin
-                       SpawnView(0, @tempbmp);
-                       // set the window name: filename, format, color count
-                       txt := 'Original - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
-                       if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
-                       txt := txt + chr(0);
-                       SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
-                      end;
-                      mcg_ForgetImage(@tempbmp);
-                     end else MessageBoxA(window, 'No graphic found on clipboard.' + chr(0), NIL, MB_OK);
-                     CloseClipboard;
-                    end;
-                // Import palette from a view
-                96: if lastactiveview <> $FF then ImportPalette(lastactiveview);
-                // Command:Clear preset palette entries
-                97: begin
-                     ClearPE(0, $FFFF);
-                     DrawMagicList;
-                     EnableWindow(mv_ButtonH[3], FALSE);
-                     colorpicking := FALSE;
-                     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
-                     ShowWindow(mv_StaticH[7], SW_HIDE);
-                    end;
-                // Command:Set Alpha rendering color
-                98: DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @AlfaSelectorProc);
-                // Help:Manual
-                99: if HelpWinH = 0 then begin
-                     z := WS_TILEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN;
-                     kind := 'Help' + chr(0);
-                     rr.left := 0; rr.right := helpsizex;
-                     rr.top := 0; rr.bottom := helpsizey;
-                     AdjustWindowRect(@rr, z, FALSE);
-                     HelpWinH := CreateWindow(@helpclass[1], @kind[1], z,
-                                 $8000, $8000, rr.right - rr.left, rr.bottom - rr.top,
-                                 0, 0, system.maininstance, NIL);
-                    end;
-                // File:Exit
-                100: SendMessageA(mv_MainWinH, wm_close, 0, 0);
-               end;
-              end;
+      // Load config
+      92:
+      begin
+       kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
+       txt := chr(0); strutsi := homedir + chr(0);
+       fillbyte(openfilurec, sizeof(openfilurec), 0);
+       with openfilurec do begin
+        lStructSize := 76; // sizeof gives incorrect result?
+        hwndOwner := window;
+        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+        nFilterIndex := 1;
+        lpstrFile := @txt[1]; nMaxFile := 255;
+        lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
+        Flags := OFN_FILEMUSTEXIST or OFN_NOCHANGEDIR;
+       end;
+       if GetOpenFileNameA(@openfilurec) then begin
+        i := ReadIni(openfilurec.lpstrfile);
+        if i <> 0 then begin
+         txt := errortxt(i) + chr(0);
+         MessageBoxA(window, @txt[1], NIL, MB_OK);
+        end;
+       end;
+      end;
 
-  // Color Block coloring
-  wm_ctlcolorstatic:
-  if dword(lapu) = mv_ColorBlockH then begin
-   byte(txt[0]) := SendMessageA(mv_EditH[1], wm_gettext, 255, ptrint(@txt[1]));
-   ivar := valhex(txt);
-   ivar := (ivar shr 16) or (ivar and $FF00) or ((ivar and $FF) shl 16);
-   if txt = '' then ivar := SwapEndian(dword(neutralcolor)) shr 8;
-   deleteObject(mv_CBBrushH);
-   mv_CBBrushH := CreateSolidBrush(ivar);
-   mv_MainProc := LResult(mv_CBBrushH);
-  end;
+      // Save config
+      93:
+      begin
+       kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
+       txt := chr(0); strutsi := homedir + chr(0);
+       fillbyte(openfilurec, sizeof(openfilurec), 0);
+       with openfilurec do begin
+        lStructSize := 76; // sizeof gives incorrect result?
+        hwndOwner := window;
+        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+        nFilterIndex := 1;
+        lpstrFile := @txt[1]; nMaxFile := 255;
+        lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
+        lpstrDefExt := @kind[31]; // "ini"
+        Flags := OFN_NOCHANGEDIR or OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST;
+       end;
 
-  // Slider handling
-  wm_VScroll,
-  wm_HScroll: if wepu and $FFFF <> SB_ENDSCROLL then begin
-               slideinfo.fMask := SIF_ALL;
-               slideinfo.cbSize := sizeof(slideinfo);
-               GetScrollInfo(lapu, SB_CTL, @slideinfo);
-               ivar := slideinfo.nPos;
-               case wepu and $FFFF of
-                SB_LINELEFT: if ivar > 0 then dec(ivar);
-                SB_LINERIGHT: inc(ivar);
-                SB_BOTTOM: ivar := high(pe);
-                SB_TOP: ivar := 0;
-                SB_PAGELEFT: if ivar > slideinfo.nPage
-                             then dec(ivar, slideinfo.nPage) else ivar := 0;
-                SB_PAGERIGHT: inc(ivar, slideinfo.nPage);
-                SB_THUMBPOSITION, SB_THUMBTRACK: ivar := wepu shr 16;
-               end;
-               slideinfo.fMask := SIF_POS;
-               slideinfo.nPos := ivar;
-               ivar := SetScrollInfo(lapu, SB_CTL, @slideinfo, TRUE);
-               if dword(lapu) = mv_SliderH[1] then begin
-                DrawMagicList;
-               end else
-               if dword(lapu) = mv_SliderH[2] then begin
-                txt := 'Output palette size: ' + strdec(ivar) + ' colors' + chr(0);
-                SendMessageA(mv_StaticH[3], wm_settext, 0, ptrint(@txt[1]));
-               end;
-              end;
+       if GetSaveFileNameA(@openfilurec) then begin
+        i := WriteIni(openfilurec.lpstrfile);
+        if i <> 0 then begin
+         txt := errortxt(i) + chr(0);
+         MessageBoxA(window, @txt[1], NIL, MB_OK);
+        end;
+       end;
+      end;
 
-  // Somebody desires our destruction!
-  wm_Close: begin
-   // Autosave the settings into the default settings file
-   WriteIni(homedir + 'buncomp.ini');
-   SelectObject(mv_ListBuffyDC, mv_OldListBuffyHandle);
-   DeleteDC(mv_ListBuffyDC);
-   DeleteObject(mv_ListBuffyHandle);
-   DeleteObject(mv_CBBrushH);
+      // Copy image to clipboard
+      94: if lastactiveview <> $FF then CopyView(lastactiveview);
 
-   DestroyWindow(window); mv_MainWinH := 0;
-  end;
+      // Command: Paste from clipboard
+      95:
+      begin
+       OpenClipboard(window);
+       {i := 0;
+       repeat
+        i := EnumClipboardFormats(i);
+        byte(strutsi[0]) := GetClipBoardFormatName(i, @strutsi[1], 255);
+        writeln(i,'=',strutsi);
+       until i = 0;}
 
-  wm_Destroy: mv_EndProgram := TRUE;
+       if IsClipboardFormatAvailable(CF_DIB) then begin
+        cliphand := GetClipboardData(CF_DIB);
+        objp := GlobalLock(cliphand);
+        i := mcg_BMPtoMemory(objp, @tempbmp);
+        GlobalUnlock(cliphand);
+        if i <> 0 then begin
+         strutsi := mcg_errortxt + chr(0);
+         MessageBoxA(mv_MainWinH, @strutsi[1], NIL, MB_OK);
+        end
+        else begin
+         SpawnView(0, @tempbmp);
+         // Set the window name: filename, format, color count.
+         txt := 'Original - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
+         if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
+         txt := txt + chr(0);
+         SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
+        end;
+        mcg_ForgetImage(@tempbmp);
+       end else
+        MessageBoxA(window, 'No graphic found on clipboard.' + chr(0), NIL, MB_OK);
+       CloseClipboard;
+      end;
 
-  else mv_MainProc := DefWindowProc(window, amex, wepu, lapu);
+      // Import palette from a view.
+      96: if lastactiveview <> $FF then ImportPalette(lastactiveview);
+
+      // Command: Clear preset palette entries
+      97:
+      begin
+       ClearPE(0, $FFFF);
+       DrawMagicList;
+       EnableWindow(mv_ButtonH[3], FALSE);
+       colorpicking := FALSE;
+       SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
+       ShowWindow(mv_StaticH[7], SW_HIDE);
+      end;
+
+      // Command: Set Alpha rendering color
+      98: DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @AlfaSelectorProc);
+
+      // Help: Manual
+      99:
+      if HelpWinH = 0 then begin
+       z := WS_TILEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN;
+       kind := 'Help' + chr(0);
+       rr.left := 0; rr.right := helpsizex;
+       rr.top := 0; rr.bottom := helpsizey;
+       AdjustWindowRect(@rr, z, FALSE);
+       HelpWinH := CreateWindow(@helpclass[1], @kind[1], z,
+         $8000, $8000, rr.right - rr.left, rr.bottom - rr.top,
+         0, 0, system.maininstance, NIL);
+      end;
+
+      // File: Exit
+      100: SendMessageA(mv_MainWinH, wm_close, 0, 0);
+    end;
+   end;
+
+   // Color Block coloring
+   wm_ctlcolorstatic:
+   if dword(lapu) = mv_ColorBlockH then begin
+    byte(txt[0]) := SendMessageA(mv_EditH[1], wm_gettext, 255, ptrint(@txt[1]));
+    i := valhex(txt);
+    i := (i shr 16) or (i and $FF00) or ((i and $FF) shl 16);
+    if txt = '' then i := SwapEndian(dword(neutralcolor)) shr 8;
+    deleteObject(mv_CBBrushH);
+    mv_CBBrushH := CreateSolidBrush(i);
+    mv_MainProc := LResult(mv_CBBrushH);
+   end;
+
+   // Slider handling
+   wm_VScroll, wm_HScroll:
+   if wepu and $FFFF <> SB_ENDSCROLL then begin
+    slideinfo.fMask := SIF_ALL;
+    slideinfo.cbSize := sizeof(slideinfo);
+    GetScrollInfo(lapu, SB_CTL, @slideinfo);
+    i := slideinfo.nPos;
+    case wepu and $FFFF of
+      SB_LINELEFT: if i > 0 then dec(i);
+      SB_LINERIGHT: inc(i);
+      SB_BOTTOM: i := high(pe);
+      SB_TOP: i := 0;
+
+      SB_PAGELEFT:
+      if i > slideinfo.nPage then
+       dec(i, slideinfo.nPage)
+      else
+       i := 0;
+
+      SB_PAGERIGHT: inc(i, slideinfo.nPage);
+      SB_THUMBPOSITION, SB_THUMBTRACK: i := wepu shr 16;
+    end;
+
+    slideinfo.fMask := SIF_POS;
+    slideinfo.nPos := i;
+    i := SetScrollInfo(lapu, SB_CTL, @slideinfo, TRUE);
+    if dword(lapu) = mv_SliderH[1] then
+     DrawMagicList
+    else if dword(lapu) = mv_SliderH[2] then begin
+     txt := 'Output palette size: ' + strdec(i) + ' colors' + chr(0);
+     SendMessageA(mv_StaticH[3], wm_settext, 0, ptrint(@txt[1]));
+    end;
+   end;
+
+   // Somebody desires our destruction!
+   wm_Close:
+   begin
+    // Autosave the settings into the default settings file.
+    WriteIni(homedir + 'buncomp.ini');
+    SelectObject(mv_ListBuffyDC, mv_OldListBuffyHandle);
+    DeleteDC(mv_ListBuffyDC);
+    DeleteObject(mv_ListBuffyHandle);
+    DeleteObject(mv_CBBrushH);
+
+    DestroyWindow(window); mv_MainWinH := 0;
+   end;
+
+   wm_Destroy: mv_EndProgram := TRUE;
+
+   else mv_MainProc := DefWindowProc(window, amex, wepu, lapu);
  end;
 
 end;
