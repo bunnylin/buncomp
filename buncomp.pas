@@ -24,8 +24,14 @@ program buncomp;
 
 // - Alpha in diffRGB etc must be premultiplied, otherwise a preset palette
 //   item with a colored alpha may be ignored in favor of a solid black
+// - Test different diffRGB functions, pick one or two best:
+//   (linear vs. sRGB while calculating delta) x
+//   (super-weighed vs. weighed vs. non) x
+//   (linear vs. sRGB while summing squares)
+//   = 12 combinations; use on 2 photos, 2 vector art, 2 gradient stress pics
+// - mclogo_wip with newdiffrgb gets stuck in infinite loop??
 // - Sierra lite dithering broken? when alpha present?
-// - Paste to clipboard should use a fast PNG, with dib v5 only secondarily
+// - Paste to clipboard should use a fast PNG, with dib v4/5 as fallback
 // - Modularise the code -> image analysis / color reduction / ui modules
 // - Source image hgram buckets should probably persist, and increase to 8k?
 // - Add command line functionality if not yet preset, add to documentation
@@ -39,14 +45,13 @@ program buncomp;
 // - Revisit the flat color detector to dismiss any color areas that are not
 //   bordered at some distance by a distinctive edge; otherwise chances are
 //   that a seemingly flat expanse is just a part of a gradient
+// - Does Preserve contrast even do anything??
 // - take more attractive screenshots for site
-// TODO: there's another thing to do at the image rendering thing
 
 {$mode fpc}
 {$apptype GUI}
 {$GOTO ON} // only used once and it improves code readability there :p
 {$codepage UTF8}
-{$asmmode intel}
 {$I-}
 {$resource bunny.res}
 
@@ -88,7 +93,7 @@ const mv_ProgramName : string = 'BunComp' + chr(0);
 var mainsizex, mainsizey, magicx, magicy : word;
     funsizex, funsizey, helpsizex, helpsizey : word;
     lastactiveview : byte;
-    viewdata : array[0..16] of packed record
+    viewdata : array[0..16] of record
       bmpdata : bitmaptype;
       winsizex, winsizey : word;
       viewofsx, viewofsy : integer;
@@ -100,7 +105,7 @@ var mainsizex, mainsizey, magicx, magicy : word;
     end;
 
     numflats : dword;
-    flats : array of packed record // viewdata[0] flat color auto-detection
+    flats : array of record // viewdata[0] flat color auto-detection
       color : RGBquad;
       weight : dword;
     end;
@@ -113,7 +118,6 @@ var mainsizex, mainsizey, magicx, magicy : word;
     tempbmp : bitmaptype;
 
     mv_ListBuffy, mv_FunBuffy : pointer;
-    mv_AMessage : msg;
     neutralcolor : RGBquad; // used to render N/A elements, system grey
     mv_MainWinH, funwinhandle, HelpWinH : handle;
     funstatus, funpal, funbutton, helptxth : handle;
@@ -136,9 +140,7 @@ var mainsizex, mainsizey, magicx, magicy : word;
       data : array[0..31] of byte;
     end;
 
-    i, j : dword; // my favorite variables for general use
-    ptxt : pchar;
-    strutsi, homedir : string;
+    homedir : string;
 
     option : record
       palsize : word; // target palette size
@@ -165,6 +167,8 @@ var mainsizex, mainsizey, magicx, magicy : word;
     // then all file output must go into \Application Data\BunComp\.
     SHGetSpecialFolderPath : function(hwndOwner : HWND; lpszPath : pointer; csidl : longint; fCreate : boolean) : boolean; stdcall;
 
+const hgram_bucket_count = 4096;
+
 {$ifdef allowLAB}
 const colorspacename : array[0..2] of string[9] = (
 'RGB', 'YCC', 'CIEDE2000');
@@ -184,7 +188,7 @@ const octadtab : array[0..3,0..3] of byte = (
 ( 8,16, 5,13),
 (11, 4, 9, 2));
 
-// PlusDTab is used as the pattern for a non-regular ordered dither.
+// PlusDTab is used as the pattern for a less regular ordered dither.
 const plusdtab : array[0..4,0..4] of byte = (
 (2,5,1,3,4),
 (1,3,4,2,5),
@@ -416,39 +420,36 @@ end;
 procedure DrawFunBuffy;
 // Renders the fun palette block that the user sees during CompressColors.
 var funpoku : pointer;
-    avar : dword;
-    rootsizex, rootsizey, xvar, yvar, pvar, qvar : word;
+    avar, q : dword;
+    rootsizex, rootsizey, x, y, pvar : word;
     aval : byte;
 begin
  if (mv_FunBuffy = NIL) or (funsizex = 0) or (funsizey = 0) or (option.palsize = 0)
  then exit;
 
- // Calculate good table display dimensions
+ // Calculate good table display dimensions.
  rootsizex := 1;
  while rootsizex * rootsizex < option.palsize do inc(rootsizex);
  rootsizey := rootsizex;
  while (rootsizex - 1) * rootsizey >= option.palsize do dec(rootsizex);
 
- // Draw it
- funpoku := mv_FunBuffy; yvar := 0;
- while yvar < funsizey do begin
-  xvar := 0;
-  pvar := (yvar * rootsizey div funsizey) * rootsizex;
-  while xvar < funsizex do begin
-   qvar := pvar + (xvar * rootsizex) div funsizex;
-   aval := pe[qvar].colo.a;
+ // Draw it.
+ funpoku := mv_FunBuffy;
+ for y := 0 to funsizey - 1 do begin
+  pvar := (y * rootsizey div funsizey) * rootsizex;
+  for x := 0 to funsizex - 1 do begin
+   q := pvar + (x * rootsizex) div funsizex;
+   aval := pe[q].colo.a;
    // for pretend alpha, a black and white xor pattern!
-   avar := ((xvar xor yvar) and $3E) shl 1 + $40;
+   avar := ((x xor y) and $3E) shl 1 + $40;
    avar := mcg_GammaTab[avar] * (aval xor $FF);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[qvar].colo.b] * aval + avar) div 255];
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.b] * aval + avar) div 255];
    inc(funpoku);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[qvar].colo.g] * aval + avar) div 255];
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.g] * aval + avar) div 255];
    inc(funpoku);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[qvar].colo.r] * aval + avar) div 255];
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.r] * aval + avar) div 255];
    inc(funpoku, 2);
-   inc(xvar);
   end;
-  inc(yvar);
  end;
 
  InvalidateRect(funpal, NIL, FALSE);
@@ -458,7 +459,7 @@ end;
 
 procedure GrabConfig;
 begin
- // grab the configuration from the UI, if it exists
+ // Grab the configuration from the UI, if it exists.
  if mv_MainWinH <> 0 then with option do begin
   if SendMessageA(mv_ButtonH[5], BM_GETCHECK, 0, 0) = BST_CHECKED
    then flat_favor := 1 else flat_favor := 0;
@@ -529,6 +530,7 @@ begin
      'D': option.dithering := valx(copy(tux, 2, length(tux) - 1));
      'F': option.flat_favor := valx(copy(tux, 2, length(tux) - 1)) and 1;
      'S': option.colorspace := valx(copy(tux, 2, length(tux) - 1));
+
      'P':
      begin
       option.palsize := valx(copy(tux, 2, length(tux) - 1));
@@ -553,6 +555,7 @@ begin
       // And the preset colors need to be reset.
       ClearPE(0, $FFFF);
      end;
+
      'C':
      begin
       i := valhex(copy(tux, 2, length(tux) - 1));
@@ -568,7 +571,7 @@ begin
  if option.colorspace in [0..2] = FALSE then option.colorspace := 0;
  pe_used := 0;
 
- // update the UI to reflect the selected options
+ // Update the UI to reflect the selected options.
  DrawMagicList;
  EnableWindow(mv_ButtonH[3], FALSE);
  colorpicking := FALSE;
@@ -621,8 +624,24 @@ var diff : function(c1, c2 : RGBA64) : dword;
 // Function Diff(c1, c2 : RGBA64) : dword;
 // Returns absolute distance between two RGBA64 colors.
 
-{$define !asmdiff} // the current asm versions are outdated and won't work
+{$define !newdiffrgb}
+{$ifdef newdiffrgb}
+function diffRGB(c1, c2 : RGBA64) : dword;
+// Returns the squared difference between the two RGBA64 colors.
+// Apparently the best way to do this is actually in sRGB space, not linear,
+// and with weighings of 3:4:2, plus whatever for alpha?
+// See https://www.compuphase.com/cmetric.htm
+// The output will be within [0..$9EC0A]
+var b, g, r, a : dword;
+begin
+ b := abs(mcg_RevGammaTab[c1.b] - mcg_RevGammaTab[c2.b]);
+ g := abs(mcg_RevGammaTab[c1.g] - mcg_RevGammaTab[c2.g]);
+ r := abs(mcg_RevGammaTab[c1.r] - mcg_RevGammaTab[c2.r]);
+ a := abs(c1.a - c2.a);
 
+ diffRGB := b * b * 2 + g * g * 4 + r * r * 3 + a * a;
+end;
+{$else}
 function diffRGB(c1, c2 : RGBA64) : dword;
 // Returns the squared difference between the two RGBA64 colors.
 // The calculation is: value + (value * value) div 4
@@ -640,6 +659,7 @@ begin
  a := a shr 2;
  inc(diffRGB, r * r + g * g + b * b + a * a);
 end;
+{$endif}
 
 {$ifdef allowLAB}
 function diffLAB(c1, c2 : dword) : dword;
@@ -1353,28 +1373,6 @@ begin
  end;
 end;
 
-procedure AddFlat(cola : dword; weight : byte);
-// Helper routine for DetectFlats - adds a new flat color to the list, or
-// adds weight to it if the particular color is already on the list.
-var afi : dword;
-begin
- afi := numflats;
- while afi <> 0 do begin
-  dec(afi);
-  if dword(flats[afi].color) = cola then begin
-   inc(flats[afi].weight, weight);
-   // overflow protection in case of huge images
-   if flats[afi].weight and $80000000 <> 0 then dec(flats[afi].weight, 16);
-   exit;
-  end;
- end;
-
- if dword(length(flats)) = numflats then setlength(flats, length(flats) + 256);
- dword(flats[numflats].color) := cola;
- flats[numflats].weight := weight;
- inc(numflats);
-end;
-
 procedure DetectFlats;
 // Looks for blocks of 3x3 or 4x4 pixels of the same color in bmpdata.image^
 // of view 0. Each match adds points to flats[color].weight, and at the end
@@ -1383,6 +1381,29 @@ var ofsx, ofsy, cmpw1 : word;
     poku, poku2, poku3, poku4 : pointer;
     refcolor, cmpd1, cmpd2, cmpd3 : dword;
     match : byte;
+
+  procedure addflat(cola : dword; weight : byte);
+  // Adds a new color to the flats[] list, or adds weight to it if the given
+  // color is already listed.
+  var afi : dword;
+  begin
+   afi := numflats;
+   while afi <> 0 do begin
+    dec(afi);
+    if dword(flats[afi].color) = cola then begin
+     inc(flats[afi].weight, weight);
+     // overflow protection in case of huge images
+     if flats[afi].weight and $80000000 <> 0 then dec(flats[afi].weight, 16);
+     exit;
+    end;
+   end;
+
+   if dword(length(flats)) = numflats then setlength(flats, length(flats) + 256);
+   dword(flats[numflats].color) := cola;
+   flats[numflats].weight := weight;
+   inc(numflats);
+  end;
+
 begin
  setlength(flats, 0); numflats := 0;
  if (viewdata[0].bmpdata.image = NIL) or (viewdata[0].bmpdata.sizey < 4)
@@ -1547,8 +1568,8 @@ procedure MakeHistogram(sr : byte);
 // one for each unique color present in the image.
 // Uses dynamic array hashing.
 var iofs, hvar, i, j, gramsize : dword;
-    hash : array[0..4095] of array of dword;
-    bucketitems : array[0..4095] of dword;
+    hash : array[0..hgram_bucket_count - 1] of array of dword;
+    bucketitems : array[0..hgram_bucket_count - 1] of dword;
     bitmask : dword;
     existence : boolean;
 begin
@@ -1558,7 +1579,8 @@ begin
  if length(viewdata[sr].bmpdata.palette) <> 0 then exit;
 
  gramsize := 0;
- filldword(bucketitems, 4096, 0);
+ filldword(bucketitems, length(bucketitems), 0);
+ setlength(hash[0], 0); // silence a compiler warning
 
  // Each 32-bit color (24-bit images are read as 32-bit) is read into HVAR,
  // then reduced to a 12-bit ID tag, placed in j. There are 4096 hashing
@@ -1599,9 +1621,8 @@ begin
  // Go through all 4096 buckets, and sequentially dump the color list array
  // contents from each into the viewdata gram.
  setlength(viewdata[sr].bmpdata.palette, gramsize);
- iofs := 4096; hvar := 0;
- while iofs <> 0 do begin
-  dec(iofs);
+ hvar := 0;
+ for iofs := high(bucketitems) downto 0 do begin
   if bucketitems[iofs] <> 0 then begin
    for i := 0 to bucketitems[iofs] - 1 do begin
     dword(viewdata[sr].bmpdata.palette[hvar]) := hash[iofs][i];
@@ -1744,19 +1765,20 @@ end;
 //   so any color ...?
 
 // Working variables
-var wgram : array of packed record
+var wgram : array of record
       color : RGBA64;
       pal : word;
     end;
-    dithertab : array of packed record
+    dithertab : array of record
       pal1, pal2 : word;
       mix : byte;
     end;
-    offenders : array of packed record
+    offenders : array of record
       who : dword; // wgram index of biggest error mapped to its pal entry
       what : dword; // magnitude of deviation
     end;
-    totalerror, lasttotalerror : qword;
+    totalerror : qword;
+    //lasttotalerror : qword;
     palusize, faktor : word;
 
 procedure Error_Calc;
@@ -2498,7 +2520,8 @@ begin
   //end; writeln;
 
   // Render the image with dithering into a new view!
-  palusize := viewdata[0].bmpdata.sizex; palptr := viewdata[0].bmpdata.sizey;
+  palusize := viewdata[0].bmpdata.sizex;
+  palptr := viewdata[0].bmpdata.sizey;
   wptr := palusize * palptr;
   mcg_ForgetImage(@rendimu);
   getmem(rendimu.image, wptr * viewdata[0].alpha);
@@ -2514,8 +2537,13 @@ begin
    // 32-bit image rendering
    while wptr <> 0 do begin
     dec(wptr);
-    if palusize = 0 then begin dec(palptr); palusize := viewdata[0].bmpdata.sizex; end;
+
+    if palusize = 0 then begin
+     dec(palptr);
+     palusize := viewdata[0].bmpdata.sizex;
+    end;
     dec(palusize);
+
     i := dword((viewdata[0].bmpdata.image + wptr * 4)^);
     j := i mod diffusecount;
     while (palu[j] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[j]]) <> i)
@@ -2668,7 +2696,9 @@ begin
   EnableWindow(mv_ButtonH[2], TRUE);
 end;
 
-function HelpProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
+// ------------------------------------------------------------------
+
+function HelpProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // A window for displaying helpful text.
 var z : dword;
     i : byte;
@@ -2731,7 +2761,7 @@ begin
  end;
 end;
 
-function AlfaSelectorProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
+function AlfaSelectorProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // A mini-dialog box for entering the color that alpha is rendered with.
 var flaguz : dword;
     kind : string[9];
@@ -2823,7 +2853,7 @@ begin
  end;
 end;
 
-function FunProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
+function FunProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 var flaguz : dword;
     kind : string[9];
     txt : string;
@@ -2832,10 +2862,11 @@ begin
  case amex of
    wm_InitDialog:
    begin
-    if (batchprocess) and (strutsi <> '') then begin
+    // I think this used to show processing messages...
+    {if (batchprocess) and (strutsi <> '') then begin
      strutsi := strutsi + chr(0);
      SendMessageA(window, WM_SETTEXT, 0, longint(@strutsi[1]));
-    end;
+    end;}
     // fun window: (8 + funsizex + 8) x (8 + funsizey + 76)
     funsizex := funsizex and $FFFC; // confirm DWORD-alignment
     funwinhandle := window;
@@ -2911,11 +2942,10 @@ begin
  end;
 end;
 
-function MagicProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
+function MagicProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // Handles win32 messages for the magic color list.
 var mv_PS : paintstruct;
     kind : string[16];
-    z : longint;
 begin
  case amex of
    // Copy stuff to screen from our own buffer
@@ -2966,9 +2996,9 @@ begin
  end;
 end;
 
-function mv_MainProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
+function mv_MainProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // Message handler for the main work window that has everything on it.
-var kind, txt : string;
+var kind, strutsi, txt : string;
     slideinfo : scrollinfo;
     openfilurec : openfilename;
     cliphand : handle;
@@ -3354,7 +3384,7 @@ begin
        end;
       end;
 
-      // File:Batch process images
+      // File: Batch process images
       89:
       begin
        colorpicking := FALSE;
@@ -3765,6 +3795,8 @@ function SpawnMainWindow : boolean;
 // keypresses; whereas a normal window cannot process ws_tabstop. The latter
 // is a smaller loss...
 var windowclass : wndclass;
+    winmsg : msg;
+    txt : string;
     z : dword;
 begin
  SpawnMainWindow := FALSE;
@@ -3779,7 +3811,7 @@ begin
  windowclass.hbrbackground := 0;
  windowclass.lpszmenuname := NIL;
  windowclass.lpszclassname := @magicclass[1];
- if registerClass (windowclass) = 0 then halt(98);
+ if RegisterClass(windowclass) = 0 then halt(98);
 
  // Register the view class for future use (for source and result images).
  windowclass.style := CS_OWNDC;
@@ -3787,13 +3819,13 @@ begin
  windowclass.cbclsextra := 0;
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
- strutsi := 'BunnyIcon' + chr(0);
- windowclass.hicon := LoadIcon(system.maininstance, @strutsi[1]);
+ txt := 'BunnyIcon' + chr(0);
+ windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_3Dface);
  windowclass.lpszmenuname := NIL;
  windowclass.lpszclassname := @viewclass[1];
- if registerClass (windowclass) = 0 then halt(98);
+ if RegisterClass(windowclass) = 0 then halt(98);
 
  // Register the help class for future use.
  windowclass.style := 0;
@@ -3801,13 +3833,13 @@ begin
  windowclass.cbclsextra := 0;
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
- strutsi := 'BunnyIcon' + chr(0);
- windowclass.hicon := LoadIcon(system.maininstance, @strutsi[1]);
+ txt := 'BunnyIcon' + chr(0);
+ windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_3Dface);
  windowclass.lpszmenuname := NIL;
  windowclass.lpszclassname := @helpclass[1];
- if registerClass (windowclass) = 0 then halt(98);
+ if RegisterClass(windowclass) = 0 then halt(98);
 
  // Register the main class for immediate use.
  windowclass.style := 0;
@@ -3815,60 +3847,59 @@ begin
  windowclass.cbclsextra := 0;
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
- strutsi := 'BunnyIcon' + chr(0);
- windowclass.hicon := LoadIcon(system.maininstance, @strutsi[1]);
+
+ txt := 'BunnyIcon' + chr(0);
+ windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_btnface);
- strutsi := 'BunnyMenu' + chr(0);
- windowclass.lpszmenuname := @strutsi[1];
+
+ txt := 'BunnyMenu' + chr(0);
+ windowclass.lpszmenuname := @txt[1];
  windowclass.lpszclassname := @mainclass[1];
- if registerClass (windowclass) = 0 then halt(98);
+ if RegisterClass(windowclass) = 0 then halt(98);
 
  mainsizex := 300; mainsizey := 330;
  z := dword(WS_CAPTION or WS_SYSMENU or WS_MINIMIZEBOX or WS_CLIPCHILDREN or WS_VISIBLE);
  rr.left := 0; rr.right := mainsizex; rr.top := 0; rr.bottom := mainsizey;
  AdjustWindowRect(@rr, z, TRUE);
  mv_MainWinH := CreateWindowEx(WS_EX_CONTROLPARENT,
-                @mainclass[1], @mv_ProgramName[1], z,
-                8, GetSystemMetrics(SM_CYSCREEN) - (rr.bottom - rr.top) - 40,
-                rr.right - rr.left, rr.bottom - rr.top,
-                0, 0, system.maininstance, NIL);
+   @mainclass[1], @mv_ProgramName[1], z,
+   8, GetSystemMetrics(SM_CYSCREEN) - (rr.bottom - rr.top) - 40,
+   rr.right - rr.left, rr.bottom - rr.top,
+   0, 0, system.maininstance, NIL);
  if mv_MainWinH = 0 then halt(99);
 
  // Load the keyboard shortcut table from bunny.res.
- strutsi := 'BunnyHop' + chr(0);
- mv_AcceleratorTable := LoadAccelerators(system.maininstance, @strutsi[1]);
+ txt := 'BunnyHop' + chr(0);
+ mv_AcceleratorTable := LoadAccelerators(system.maininstance, @txt[1]);
 
  // Create a right-click pop-up menu for the views.
  mv_ContextMenu := CreatePopupMenu;
- strutsi := '&Copy to clipboard ' + chr(8) + '(CTRL+C)' + chr(0);
- InsertMenu(mv_ContextMenu, 0, MF_BYPOSITION, 94, @strutsi[1]);
- strutsi := '&Save as PNG ' + chr(8) + '(CTRL+S)' + chr(0);
- InsertMenu(mv_ContextMenu, 1, MF_BYPOSITION, 91, @strutsi[1]);
- strutsi := 'I&mport palette ' + chr(8) + '(CTRL+M)' + chr(0);
- InsertMenu(mv_ContextMenu, 2, MF_BYPOSITION, 96, @strutsi[1]);
+ txt := '&Copy to clipboard ' + chr(8) + '(CTRL+C)' + chr(0);
+ InsertMenu(mv_ContextMenu, 0, MF_BYPOSITION, 94, @txt[1]);
+ txt := '&Save as PNG ' + chr(8) + '(CTRL+S)' + chr(0);
+ InsertMenu(mv_ContextMenu, 1, MF_BYPOSITION, 91, @txt[1]);
+ txt := 'I&mport palette ' + chr(8) + '(CTRL+M)' + chr(0);
+ InsertMenu(mv_ContextMenu, 2, MF_BYPOSITION, 96, @txt[1]);
 
  // Just in case, make sure we are in the user's face.
  SetForegroundWindow(mv_MainWinH);
  SetFocus(mv_MainWinH);
 
+ winmsg.hWnd := 0; // silence a compiler warning
  // Get rid of init messages and give the window its first layer of paint.
- while peekmessage(@mv_amessage, mv_MainWinH, 0, 0, PM_REMOVE) do begin
-  translatemessage(mv_amessage);
-  dispatchmessage(mv_amessage);
+ while PeekMessage(@winmsg, mv_MainWinH, 0, 0, PM_REMOVE) do begin
+  TranslateMessage(winmsg);
+  DispatchMessage(winmsg);
  end;
 end;
 
 // ------------------------------------------------------------------
 
+{$define !difftest}
+{$ifdef difftest}
+procedure DiffTest;
 begin
- AddExitProc(@bunexit);
- setlength(pe, 256);
-
- {$ifdef allowLAB} labtable[0] := 0; {$endif}
-
- {$define !difftest}
- {$ifdef difftest}
  // tiny debug segment to confirm any changes to diff routines aren't broken
  writeln('=== Testing ===');
  diff := @diffYCC;
@@ -3903,9 +3934,14 @@ begin
   inc(j,dword(pe[palusize].colo));
  end;
  writeln; writeln('Average: ',j div 10,' msec');
- exit;
- {$endif difftest}
+end;
+{$endif difftest}
 
+procedure DoInits;
+var ptxt : pchar;
+    txt : string;
+    i, j : dword;
+begin
  // Get the current directory! It is used for the config file.
  // If the current directory is not accessible, then try for that silly
  // Win\AppData\ directory...
@@ -3925,11 +3961,11 @@ begin
   getmem(ptxt, MAX_PATH);
   j := GetSystemDirectoryA(ptxt, MAX_PATH);
   if j = 0 then begin freemem(ptxt); ptxt := NIL; halt(84); end;
-  strutsi := '\shell32.dll' + chr(0);
-  move(strutsi[1], ptxt[j], length(strutsi));
+  txt := '\shell32.dll' + chr(0);
+  move(txt[1], ptxt[j], length(txt));
   HelpWinH := LoadLibraryA(ptxt);
-  strutsi := 'SHGetSpecialFolderPathA' + chr(0);
-  pointer(SHGetSpecialFolderPath) := GetProcAddress(HelpWinH, @strutsi[1]);
+  txt := 'SHGetSpecialFolderPathA' + chr(0);
+  pointer(SHGetSpecialFolderPath) := GetProcAddress(HelpWinH, @txt[1]);
   if pointer(SHGetSpecialFolderPath) = NIL then halt(86);
   if SHGetSpecialFolderPath(0, ptxt, CSIDL_APPDATA, TRUE) = FALSE then begin
    freemem(ptxt); ptxt := NIL; halt(87);
@@ -3947,8 +3983,8 @@ begin
   i := IOresult;
  end;
  if i <> 0 then begin
-  strutsi := errortxt(i) + ' trying to write in own directory as well as ' + homedir + chr(0);
-  MessageBoxA(0, @strutsi[1], NIL, MB_OK); halt;
+  txt := errortxt(i) + ' trying to write in own directory as well as ' + homedir + chr(0);
+  MessageBoxA(0, @txt[1], NIL, MB_OK); halt;
  end;
  close(stdout); erase(stdout);
 
@@ -3989,16 +4025,32 @@ begin
   DrawMagicList;
   WriteIni(homedir + 'buncomp.ini');
  end;
+end;
 
- // Main message loop.
- while (mv_EndProgram = FALSE) and (getmessage(@mv_amessage, 0, 0, 0))
+procedure MainLoop;
+var winmsg : msg;
+begin
+ while (mv_EndProgram = FALSE) and (getmessage(@winmsg, 0, 0, 0))
  do begin
-  if translateaccelerator(mv_MainWinH, mv_AcceleratorTable, mv_amessage) = 0
+  if TranslateAccelerator(mv_MainWinH, mv_AcceleratorTable, winmsg) = 0
   then begin
-   translatemessage(mv_amessage);
-   dispatchmessage(mv_amessage);
+   TranslateMessage(winmsg);
+   DispatchMessage(winmsg);
   end;
  end;
+end;
+
+// ------------------------------------------------------------------
+
+begin
+ AddExitProc(@bunexit);
+ setlength(pe, 256);
+
+ {$ifdef allowLAB} labtable[0] := 0; {$endif}
+ {$ifdef difftest} Difftest; exit; {$endif}
+
+ DoInits;
+ MainLoop;
 
  PostQuitMessage(0);
 end.
