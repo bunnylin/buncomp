@@ -32,7 +32,7 @@ program buncomp;
 // - mclogo_wip with newdiffrgb gets stuck in infinite loop??
 // - Sierra lite dithering broken? when alpha present?
 // - Paste to clipboard should use a fast PNG, with dib v4/5 as fallback
-// - Modularise the code -> image analysis / color reduction / ui modules
+// - Further modularise the code
 // - Source image hgram buckets should probably persist, and increase to 8k?
 // - Add command line functionality if not yet preset, add to documentation
 // - Add menu select "Export using minimal palette", default yes; when off,
@@ -150,8 +150,8 @@ var mainsizex, mainsizey, magicx, magicy : word;
     labtable : array[0..65535] of word;
     {$endif}
 
-    // palette entries, both presets and algorithmically calculated go here
-    pe : array of packed record
+    // Palette entries, both presets and algorithmically calculated go here.
+    pe : array of record
       colo : RGBquad;
       colog : RGBA64; // for the gamma-corrected values
       status : byte; // 0 free, 1 used, 2 used fixed, 3 detected flat
@@ -333,20 +333,19 @@ begin
  QuickTrace := TRUE;
 end;}
 
-procedure outpal;
-// Debugging function, prints the palette state into an attached console
-var lix : word;
+procedure DrawMagicList; forward;
+
+procedure GrabConfig;
 begin
- writeln('=== Palette state ===');
- for lix := 0 to option.palsize - 1 do begin
-  if lix and 7 = 0 then write(lix:5,': ');
-  case pe[lix].status of
-    0: write('-------- ');
-    1: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
-    2: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
-    3: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
-  end;
-  if (lix and 7 = 7) or (lix + 1 = option.palsize) then writeln;
+ // Grab the configuration from the UI, if it exists.
+ if mv_MainWinH <> 0 then with option do begin
+  if SendMessageA(mv_ButtonH[5], BM_GETCHECK, 0, 0) = BST_CHECKED
+   then flat_favor := 1 else flat_favor := 0;
+  if SendMessageA(mv_ButtonH[6], BM_GETCHECK, 0, 0) = BST_CHECKED
+   then maxcontrast := 1 else maxcontrast := 0;
+  palsize := SendMessageA(mv_SliderH[2], SBM_GETPOS, 0, 0);
+  dithering := SendMessageA(mv_ListH[2], CB_GETCURSEL, 0, 0);
+  colorspace := SendMessageA(mv_ListH[3], CB_GETCURSEL, 0, 0);
  end;
 end;
 
@@ -362,112 +361,6 @@ begin
  for i := maxi downto mini do begin
   dword(pe[i].colo) := dword(neutralcolor);
   pe[i].status := 0;
- end;
-end;
-
-procedure DrawMagicList;
-// Fills the custom listbox bitmap with the color and text reference of the
-// currently visible palette entries.
-var mlp : byte;
-    pali : word;
-    areasize, osfet, blob : dword;
-    blah : string[20];
-begin
- areasize := magicx * magicy div 8;
- osfet := 0;
- pali := GetScrollPos(mv_SliderH[1], SB_CTL);
- for mlp := 0 to 7 do begin
-  blob := areasize;
-  while blob <> 0 do begin
-   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.b; inc(osfet);
-   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.g; inc(osfet);
-   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.r; inc(osfet);
-   dec(blob);
-  end;
-  SetBkColor(mv_ListBuffyDC, SwapEndian(dword(pe[pali].colo)) shr 8);
-  blob := $FFFFFF;
-  if (pe[pali].colo.b shr 1)
-   + (pe[pali].colo.g shl 1)
-   + pe[pali].colo.r + (pe[pali].colo.r shr 2)
-   >= 400
-   then blob := 0;
-  SetTextColor(mv_ListBuffyDC, blob);
-  SetTextAlign(mv_ListBuffyDC, TA_LEFT);
-  blah := strdec(pali) + ':';
-  if pali = pe_used then begin
-   SelectObject(mv_ListBuffyDC, mv_FontH[1]);
-   TextOut(mv_ListBuffyDC, 3, mlp * (magicy shr 3) + 2, @blah[1], length(blah));
-   SelectObject(mv_ListBuffyDC, mv_FontH[2]);
-  end
-  else begin
-   SelectObject(mv_ListBuffyDC, mv_FontH[2]);
-   TextOut(mv_ListBuffyDC, 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
-  end;
-
-  if pe[pali].status = 0 then blah := 'Not set' else blah := hexifycolor(pe[pali].colo);
-  TextOut(mv_ListBuffyDC, (magicx shr 2) + 8, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
-  if pe[pali].status <> 0 then begin
-   SetTextAlign(mv_ListBuffyDC, TA_RIGHT);
-   blah := hextable[pe[pali].colo.a shr 4] + hextable[pe[pali].colo.a and $F];
-   TextOut(mv_ListBuffyDC, magicx - 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
-  end;
-
-  inc(pali);
- end;
- InvalidateRect(mv_ListH[1], NIL, FALSE);
-end;
-
-procedure DrawFunBuffy;
-// Renders the fun palette block that the user sees during CompressColors.
-var funpoku : pointer;
-    avar, q : dword;
-    rootsizex, rootsizey, x, y, pvar : word;
-    aval : byte;
-begin
- if (mv_FunBuffy = NIL) or (funsizex = 0) or (funsizey = 0) or (option.palsize = 0)
- then exit;
-
- // Calculate good table display dimensions.
- rootsizex := 1;
- while rootsizex * rootsizex < option.palsize do inc(rootsizex);
- rootsizey := rootsizex;
- while (rootsizex - 1) * rootsizey >= option.palsize do dec(rootsizex);
-
- // Draw it.
- funpoku := mv_FunBuffy;
- for y := 0 to funsizey - 1 do begin
-  pvar := (y * rootsizey div funsizey) * rootsizex;
-  for x := 0 to funsizex - 1 do begin
-   q := pvar + (x * rootsizex) div funsizex;
-   aval := pe[q].colo.a;
-   // for pretend alpha, a black and white xor pattern!
-   avar := ((x xor y) and $3E) shl 1 + $40;
-   avar := mcg_GammaTab[avar] * (aval xor $FF);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.b] * aval + avar) div 255];
-   inc(funpoku);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.g] * aval + avar) div 255];
-   inc(funpoku);
-   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.r] * aval + avar) div 255];
-   inc(funpoku, 2);
-  end;
- end;
-
- InvalidateRect(funpal, NIL, FALSE);
-end;
-
-// ------------------------------------------------------------------
-
-procedure GrabConfig;
-begin
- // Grab the configuration from the UI, if it exists.
- if mv_MainWinH <> 0 then with option do begin
-  if SendMessageA(mv_ButtonH[5], BM_GETCHECK, 0, 0) = BST_CHECKED
-   then flat_favor := 1 else flat_favor := 0;
-  if SendMessageA(mv_ButtonH[6], BM_GETCHECK, 0, 0) = BST_CHECKED
-   then maxcontrast := 1 else maxcontrast := 0;
-  palsize := SendMessageA(mv_SliderH[2], SBM_GETPOS, 0, 0);
-  dithering := SendMessageA(mv_ListH[2], CB_GETCURSEL, 0, 0);
-  colorspace := SendMessageA(mv_ListH[3], CB_GETCURSEL, 0, 0);
  end;
 end;
 
@@ -592,6 +485,73 @@ end;
 
 // ------------------------------------------------------------------
 
+procedure outpal;
+// Debugging function, prints the palette state into an attached console
+var lix : word;
+begin
+ writeln('=== Palette state ===');
+ for lix := 0 to option.palsize - 1 do begin
+  if lix and 7 = 0 then write(lix:5,': ');
+  case pe[lix].status of
+    0: write('-------- ');
+    1: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
+    2: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
+    3: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
+  end;
+  if (lix and 7 = 7) or (lix + 1 = option.palsize) then writeln;
+ end;
+end;
+
+procedure ValidateHexaco;
+// The edit box should only accept hexadecimals; flush out everything else.
+// If the boxes are not empty, enable the apply button, otherwise disable.
+var mur : byte;
+    kind : string[7];
+begin
+ byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
+ if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
+ mur := length(kind);
+ while mur <> 0 do begin
+  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
+   dec(mur);
+   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
+   SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
+   SendMessageA(mv_EditH[1], EM_SETSEL, mur, mur);
+   EnableWindow(mv_ButtonH[2], FALSE);
+   exit;
+  end;
+  dec(mur);
+ end;
+
+ if SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
+  EnableWindow(mv_ButtonH[2], TRUE);
+end;
+
+procedure ValidateAlfaco;
+// The edit box should only accept hexadecimals; flush out everything else.
+// If the boxes are not empty, enable the apply button, otherwise disable.
+var mur : byte;
+    kind : string[7];
+begin
+ byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1]));
+ if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
+ mur := length(kind);
+ while mur > 0 do begin
+  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
+   dec(mur);
+   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
+   SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
+   SendMessageA(mv_EditH[2], EM_SETSEL, mur, mur);
+   EnableWindow(mv_ButtonH[2], FALSE);
+   exit;
+  end;
+  dec(mur);
+ end;
+
+ if SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
+  EnableWindow(mv_ButtonH[2], TRUE);
+end;
+
 function fetchpixel(winpo : byte; cx, cy : word) : RGBquad;
 // Grabs the RGB or RGBA color from coordinates cx,cy in view image winpo.
 var ofsu : pointer;
@@ -606,205 +566,97 @@ begin
  if viewdata[winpo].alpha <> 4 then dword(fetchpixel) := dword(fetchpixel) or $FF000000;
 end;
 
-{$ifdef allowLAB}
-procedure BuildLabTable;
-// Precalculates the results of f(t), t = [0..65535], as used in the
-// XYZ to LAB colorspace transformation. The table is stored in LabTable[].
-var i : word;
+procedure DrawMagicList;
+// Fills the custom listbox bitmap with the color and text reference of the
+// currently visible palette entries.
+var mlp : byte;
+    pali : word;
+    areasize, osfet, blob : dword;
+    blah : string[20];
 begin
- for i := 0 to 65535 do
-  if i > 580
-  then LabTable[i] := round(power(i / 65535, 1/3) * 65535)
-  else LabTable[i] := round(841 * i / 108 + 9039);
+ areasize := magicx * magicy div 8;
+ osfet := 0;
+ pali := GetScrollPos(mv_SliderH[1], SB_CTL);
+ for mlp := 0 to 7 do begin
+  blob := areasize;
+  while blob <> 0 do begin
+   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.b; inc(osfet);
+   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.g; inc(osfet);
+   byte((mv_ListBuffy + osfet)^) := pe[pali].colo.r; inc(osfet);
+   dec(blob);
+  end;
+  SetBkColor(mv_ListBuffyDC, SwapEndian(dword(pe[pali].colo)) shr 8);
+  blob := $FFFFFF;
+  if (pe[pali].colo.b shr 1)
+   + (pe[pali].colo.g shl 1)
+   + pe[pali].colo.r + (pe[pali].colo.r shr 2)
+   >= 400
+   then blob := 0;
+  SetTextColor(mv_ListBuffyDC, blob);
+  SetTextAlign(mv_ListBuffyDC, TA_LEFT);
+  blah := strdec(pali) + ':';
+  if pali = pe_used then begin
+   SelectObject(mv_ListBuffyDC, mv_FontH[1]);
+   TextOut(mv_ListBuffyDC, 3, mlp * (magicy shr 3) + 2, @blah[1], length(blah));
+   SelectObject(mv_ListBuffyDC, mv_FontH[2]);
+  end
+  else begin
+   SelectObject(mv_ListBuffyDC, mv_FontH[2]);
+   TextOut(mv_ListBuffyDC, 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
+  end;
+
+  if pe[pali].status = 0 then blah := 'Not set' else blah := hexifycolor(pe[pali].colo);
+  TextOut(mv_ListBuffyDC, (magicx shr 2) + 8, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
+  if pe[pali].status <> 0 then begin
+   SetTextAlign(mv_ListBuffyDC, TA_RIGHT);
+   blah := hextable[pe[pali].colo.a shr 4] + hextable[pe[pali].colo.a and $F];
+   TextOut(mv_ListBuffyDC, magicx - 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
+  end;
+
+  inc(pali);
+ end;
+ InvalidateRect(mv_ListH[1], NIL, FALSE);
 end;
-{$endif}
 
-var diff : function(c1, c2 : RGBA64) : dword;
-
-// Function Diff(c1, c2 : RGBA64) : dword;
-// Returns absolute distance between two RGBA64 colors.
-
-{$define !newdiffrgb}
-{$ifdef newdiffrgb}
-function diffRGB(c1, c2 : RGBA64) : dword;
-// Returns the squared difference between the two RGBA64 colors.
-// Apparently the best way to do this is actually in sRGB space, not linear,
-// and with weighings of 3:4:2, plus whatever for alpha?
-// See https://www.compuphase.com/cmetric.htm
-// The output will be within [0..$9EC0A]
-var b, g, r, a : dword;
+procedure DrawFunBuffy;
+// Renders the fun palette block that the user sees during CompressColors.
+var funpoku : pointer;
+    avar, q : dword;
+    rootsizex, rootsizey, x, y, pvar : word;
+    aval : byte;
 begin
- b := abs(mcg_RevGammaTab[c1.b] - mcg_RevGammaTab[c2.b]);
- g := abs(mcg_RevGammaTab[c1.g] - mcg_RevGammaTab[c2.g]);
- r := abs(mcg_RevGammaTab[c1.r] - mcg_RevGammaTab[c2.r]);
- a := abs(c1.a - c2.a);
+ if (mv_FunBuffy = NIL) or (funsizex = 0) or (funsizey = 0) or (option.palsize = 0)
+ then exit;
 
- diffRGB := b * b * 2 + g * g * 4 + r * r * 3 + a * a;
+ // Calculate good table display dimensions.
+ rootsizex := 1;
+ while rootsizex * rootsizex < option.palsize do inc(rootsizex);
+ rootsizey := rootsizex;
+ while (rootsizex - 1) * rootsizey >= option.palsize do dec(rootsizex);
+
+ // Draw it.
+ funpoku := mv_FunBuffy;
+ for y := 0 to funsizey - 1 do begin
+  pvar := (y * rootsizey div funsizey) * rootsizex;
+  for x := 0 to funsizex - 1 do begin
+   q := pvar + (x * rootsizex) div funsizex;
+   aval := pe[q].colo.a;
+   // for pretend alpha, a black and white xor pattern!
+   avar := ((x xor y) and $3E) shl 1 + $40;
+   avar := mcg_GammaTab[avar] * (aval xor $FF);
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.b] * aval + avar) div 255];
+   inc(funpoku);
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.g] * aval + avar) div 255];
+   inc(funpoku);
+   byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.r] * aval + avar) div 255];
+   inc(funpoku, 2);
+  end;
+ end;
+
+ InvalidateRect(funpal, NIL, FALSE);
 end;
-{$else}
-function diffRGB(c1, c2 : RGBA64) : dword;
-// Returns the squared difference between the two RGBA64 colors.
-// The calculation is: value + (value * value) div 4
-// The output will be within [0..$40020000]
-var r, g, b, a : dword;
-begin
- r := abs(c1.r - c2.r);
- g := abs(c1.g - c2.g);
- b := abs(c1.b - c2.b);
- a := abs(c1.a - c2.a);
- diffRGB := r + g + b + a;
- r := r shr 2;
- g := g shr 2;
- b := b shr 2;
- a := a shr 2;
- inc(diffRGB, r * r + g * g + b * b + a * a);
-end;
-{$endif}
 
-{$ifdef allowLAB}
-function diffLAB(c1, c2 : dword) : dword;
-// Returns the perceived difference between the two RGBquad colors.
-// This converts the RGB into CIE XYZ, then to CIE LAB, which is
-// an "approximately uniform color space." The function takes the difference
-// between the LAB values of both colors, squares each, and sums them with
-// extra weight together with a squared Alpha difference.
-// Unfortunately, this looks awful... an implementation error, no doubt.
-var X1, Y1, Z1, X2, Y2, Z2 : longint;
-    L1, A1, B1, A2 : word;
-begin
- // The standard transformation sRGB --> CIE XYZ is given by ITU-R BT.709
- // (the ratios seem to come from the 1931 CIE definition; 2 degrees, D65)
- // I adjusted them to have uniform maximums (multipliers sum to 1).
- //
- // X := 0.4339500 * r + 0.3762098 * g + 0.1898402 * b;
- // Y := 0.2126728 * r + 0.7151522 * g + 0.0721750 * b;
- // Z := 0.0177566 * r + 0.1094680 * g + 0.8727754 * b;
- //
- // function f(t : word) : word
- // if t > tmax * 216/24389 then f := (t/tmax) ^1/3 * tmax
- // else f := 841/108 * t + 4/29 * tmax;
- //
- // L := 116 * (f(Y) / ymax) - 16;
- // A := 500 * (f(X) - f(Y)) / xmax;
- // B := 200 * (f(Y) - f(Z)) / zmax;
- // ====================
- // 2013 remark: Bruce Lindbloom's discontinuity study of L* conversions
- // suggests an improved linear RGB to Lab algorithm.
-
- {$ifdef SingleColorLABTransform}
- // RGB are [0..255], adjust multipliers by 32768*65535/255 = 8421376
- X1 := (3654456 * RGBquad(c1).r + 3168204 * RGBquad(c1).g + 1598716 * RGBquad(c1).b) div 32768;
- Y1 := (1790998 * RGBquad(c1).r + 6022565 * RGBquad(c1).g + 607813 * RGBquad(c1).b) div 32768;
- Z1 := (149535 * RGBquad(c1).r + 921871 * RGBquad(c1).g + 7349970 * RGBquad(c1).b) div 32768;
- // XYZ are [0..65535]
- // the LabTable values have theoretical ranges of [9039..65535]
- L1 := (round(47513.6 * LabTable[Y1]) + 327675) div 655350 - 655;
- A1 := 4096 * (LabTable[X1] - LabTable[Y1]) div 13107 + 17655;
- B1 := 8192 * (LabTable[Y1] - LabTable[Z1]) div 65535 + 7062;
- // L is scaled from [0..100]    to [0..4096]
- // A is scaled from [-431..431] to [0..35310]
- // B is scaled from [-172..172] to [0..14124]
- writeln(hexifycolor(RGBquad(c1)), ' > L:', L1, '  A:', A1, '  B:', B1);
- {$endif}
-
- X1 := (3654456 * RGBquad(c1).r + 3168204 * RGBquad(c1).g + 1598716 * RGBquad(c1).b) div 32768;
- Y1 := (1790998 * RGBquad(c1).r + 6022565 * RGBquad(c1).g + 607813 * RGBquad(c1).b) div 32768;
- Z1 := (149535 * RGBquad(c1).r + 921871 * RGBquad(c1).g + 7349970 * RGBquad(c1).b) div 32768;
-
- X2 := (3654456 * RGBquad(c2).r + 3168204 * RGBquad(c2).g + 1598716 * RGBquad(c2).b) div 32768;
- Y2 := (1790998 * RGBquad(c2).r + 6022565 * RGBquad(c2).g + 607813 * RGBquad(c2).b) div 32768;
- Z2 := (149535 * RGBquad(c2).r + 921871 * RGBquad(c2).g + 7349970 * RGBquad(c2).b) div 32768;
-
- X1 := LabTable[X1] - LabTable[X2];
- Z1 := LabTable[Z2] - LabTable[Z1];
- Y1 := LabTable[Y1] - LabTable[Y2];
-
- // L1 := (round(47513.6 * abs(Y1)) + 327675) div 655350;
- asm
-  mov eax, Y1
-  cdq; xor eax, edx; sub eax, edx
-  mov edx, 475136; mul edx; mov ecx, 0
-  add eax, 3276750; adc edx, ecx
-  mov ecx, 6553500; div ecx // EDX:EAX is too big for magic division...
-  mov L1, ax
- end ['EAX', 'ECX', 'EDX'];
- A1 := 4096 * abs(X1 - Y1) div 13107;
- B1 := 8192 * abs(Y1 + Z1) div 65535;
- A2 := abs(RGBquad(c1).a - RGBquad(c2).a); // alpha, separately
-
- diffLAB := (L1 * L1 + A1 * A1 + B1 * B1) * 2 + A2 * A2 + 1;
- // theoretical maximum output is $AE6A0FAA
-end;
-{$endif}
-
-// ::: DiffYCC :::
-// The distance is calculated with perceptual weighting. The colors are
-// broken from RGB color space into YCbCr, where Y is sort of greenish luma,
-// and Cb and Cr are the delta from it to the red and blue components.
-//
-// The calculations are done with fixed point maths. This entails shifting
-// numbers up somewhat, and doing digital rounding upon divisions. Digital
-// rounding means adding half of the divisor to the dividee before dividing.
-// For example: 15 div 4 = 3    but (15 + 2) div 4 = 4
-//
-// Finally, for the distance calculation, the components are weighed.
-// 2 Y : 3/2 Cr : 1 Cb : 1 a (and afterwards, they are squared)
-function diffYCC(c1, c2 : RGBA64) : dword;
-var Y : longint;
-    Cb, Cr : dword;
-    aeon : word;
-begin
- { RGB-to-YCbCr conversion: (ITU-R BT.709) }
- { (not using BT.2020 yet, too advanced)   }
- {                                         }
- { Kb = 0.0722 = 2366 / 32768              }
- { Kr = 0.2126 = 6966 / 32768              }
- {                                         }
- { Y' = 0.2126r + 0.7152g + 0.0722b        }
- { Cr = (r - Y') / 1.5748                  }
- { Cb = (b - Y') / 1.8556                  }
-
- // This is the optimised version, the comparison can be unified without
- // breaking the expression! Here I use (c1 - c2).
- // Y ranges [-7FFF8000..7FFF8000], scaled to [-FFFF00..FFFF00]
- Y := (6966 * (c1.r - c2.r)
-    + 23436 * (c1.g - c2.g)
-     + 2366 * (c1.b - c2.b)) div 128;
- // Cr is in 24-bit scale, to start with; div 1.5748 becomes *256/403.1488
- // and when the *256 is dropped, Cr ends in a 16-bit scale [0..FFFF].
- Cr := (abs(c2.r shl 8 - c1.r shl 8 + Y) + 201) div 403;
- // Cb likewise, div 1.8556 becomes *256/475.0336, scaling to [0..FFFF].
- Cb := (abs(c2.b shl 8 - c1.b shl 8 + Y) + 237) div 475;
-
- // Shift Y from 24- to 17-bit scale (16-bit * 2, actually)
- Y := (abs(Y) + 64) shr 7;
- // Make Cr 16-bit * 1.5
- inc(Cr, Cr shr 1);
- // Keep Cb at 16-bit * 1
- // And let's not forget poor old alpha, also at 16-bit * 1 weight.
- aeon := abs(c2.a - c1.a);
-
- // For debugging verification
- //writeln('RGBA Color1: ',hexifycolor(rgbquad(c1))+strhex(rgbquad(c1).a));
- //writeln('RGBA Color2: ',hexifycolor(rgbquad(c2))+strhex(rgbquad(c2).a));
- //write('Diff: Y ',Y,'  Cr ',Cr,'  Cb ',Cb,'  a ',aeon,'  total ');
-
- // Finally, calculate the difference-value itself
- // Numbers have to be squared, while trying hard not to overflow a dword,
- // without losing the lower end's granularity completely.
- diffYCC := Y + Cr + Cb + aeon; // nominal range of sum = [0..360443]
- Y := Y shr 2; // nominal range [0..32767], square 1 073 676 289
- Cr := Cr shr 2; // nominal range [0..24575], square 603 930 625
- Cb := Cb shr 2; // nominal range [0..16383], square 268 402 689
- aeon := aeon shr 2; // nominal range [0..16383], square 268 402 689
- inc(diffYCC, dword(Y * Y) + Cr * Cr + Cb * Cb + aeon * aeon);
- // Summed squares can nominally total up to 2 214 412 292.
- // With previous non-squared, the function's nominal output range becomes
- // [0..2 214 772 735] or [0..$8402BFFF].
- // In practice, the biggest output is $50017FFF, between black and white.
- // This means you might safely use the top bit for something else when
- // storing returned diff values.
-end;
+{$include bcc_diff.pas}
 
 procedure PackView(winpo : byte; bytealign : byte; whither : pbitmaptype);
 // Takes a view and checks if the number of colors is 256 or less. In that
@@ -1373,264 +1225,7 @@ begin
  end;
 end;
 
-procedure DetectFlats;
-// Looks for blocks of 3x3 or 4x4 pixels of the same color in bmpdata.image^
-// of view 0. Each match adds points to flats[color].weight, and at the end
-// the array is sorted in order of descending weights.
-var ofsx, ofsy, cmpw1 : word;
-    poku, poku2, poku3, poku4 : pointer;
-    refcolor, cmpd1, cmpd2, cmpd3 : dword;
-    match : byte;
-
-  procedure addflat(cola : dword; weight : byte);
-  // Adds a new color to the flats[] list, or adds weight to it if the given
-  // color is already listed.
-  var afi : dword;
-  begin
-   afi := numflats;
-   while afi <> 0 do begin
-    dec(afi);
-    if dword(flats[afi].color) = cola then begin
-     inc(flats[afi].weight, weight);
-     // overflow protection in case of huge images
-     if flats[afi].weight and $80000000 <> 0 then dec(flats[afi].weight, 16);
-     exit;
-    end;
-   end;
-
-   if dword(length(flats)) = numflats then setlength(flats, length(flats) + 256);
-   dword(flats[numflats].color) := cola;
-   flats[numflats].weight := weight;
-   inc(numflats);
-  end;
-
-begin
- setlength(flats, 0); numflats := 0;
- if (viewdata[0].bmpdata.image = NIL) or (viewdata[0].bmpdata.sizey < 4)
- or (viewdata[0].bmpdata.sizex < 4)
- then exit;
-
- setlength(flats, 512);
-
- ofsy := viewdata[0].bmpdata.sizey - 3;
- while ofsy <> 0 do begin
-  dec(ofsy);
-  ofsx := viewdata[0].bmpdata.sizex - 3;
-  poku := viewdata[0].bmpdata.image;
-  inc(poku, (ofsy * viewdata[0].bmpdata.sizex + ofsx) * viewdata[0].alpha);
-  poku2 := poku; inc(poku2, viewdata[0].bmpdata.sizex * viewdata[0].alpha);
-  poku3 := poku2; inc(poku3, viewdata[0].bmpdata.sizex * viewdata[0].alpha);
-  poku4 := poku3; inc(poku4, viewdata[0].bmpdata.sizex * viewdata[0].alpha);
-  if viewdata[0].alpha = 4 then begin
-   // 32-bit source
-   while ofsx <> 0 do begin
-    dec(ofsx); dec(poku, 4); dec(poku2, 4); dec(poku3, 4); dec(poku4, 4);
-    refcolor := dword(poku^);
-    // 3x3 match?
-    if (dword((poku + 4)^) = refcolor)
-    and (dword((poku + 8)^) = refcolor)
-    and (dword(poku2^) = refcolor)
-    and (dword((poku2 + 4)^) = refcolor)
-    and (dword((poku2 + 8)^) = refcolor)
-    and (dword(poku3^) = refcolor)
-    and (dword((poku3 + 4)^) = refcolor)
-    and (dword((poku3 + 8)^) = refcolor)
-    then begin
-     match := 3;
-     // 4x4 match?
-     if (dword((poku + 12)^) <> refcolor)
-     or (dword((poku2 + 12)^) <> refcolor)
-     or (dword((poku3 + 12)^) <> refcolor)
-     or (dword(poku4^) <> refcolor)
-     or (dword((poku4 + 4)^) <> refcolor)
-     or (dword((poku4 + 8)^) <> refcolor)
-     or (dword((poku4 + 12)^) <> refcolor)
-     then match := 1;
-     addflat(refcolor, match);
-    end;
-   end;
-  end else begin
-   // 24-bit source
-   while ofsx <> 0 do begin
-    dec(ofsx); dec(poku, 3); dec(poku2, 3); dec(poku3, 3); dec(poku4, 3);
-    refcolor := dword(poku^) and $FFFFFF;
-    // 3x3 match?
-    if (dword(poku2^) and $FFFFFF = refcolor)
-    and (dword(poku3^) and $FFFFFF = refcolor)
-    and (dword((poku + 3)^) and $FFFFFF = refcolor)
-    and (dword((poku2 + 3)^) and $FFFFFF = refcolor)
-    and (dword((poku3 + 3)^) and $FFFFFF = refcolor)
-    and (dword((poku + 6)^) and $FFFFFF = refcolor)
-    and (dword((poku2 + 6)^) and $FFFFFF = refcolor)
-    and (dword((poku3 + 6)^) and $FFFFFF = refcolor)
-    then begin
-     // 4x4 match?
-     match := 3;
-     if (dword(poku4^) and $FFFFFF <> refcolor)
-     or (dword((poku4 + 3)^) and $FFFFFF <> refcolor)
-     or (dword((poku4 + 6)^) and $FFFFFF <> refcolor)
-     or (dword((poku4 + 9)^) and $FFFFFF <> refcolor)
-     or (dword((poku + 9)^) and $FFFFFF <> refcolor)
-     or (dword((poku2 + 9)^) and $FFFFFF <> refcolor)
-     or (dword((poku3 + 9)^) and $FFFFFF <> refcolor)
-     then match := 1;
-     addflat(refcolor or $FF000000, match);
-    end;
-   end;
-  end;
- end;
-
- if numflats = 0 then exit;
-
- // Sort the list (teleporting gnome sort).
- cmpd1 := 0; cmpd2 := $FFFFFFFF;
- while cmpd1 < numflats do begin
-  if (cmpd1 = 0) or (flats[cmpd1].weight <= flats[cmpd1 - 1].weight)
-  then begin
-   if cmpd2 <> $FFFFFFFF then cmpd1 := cmpd2 else inc(cmpd1);
-   cmpd2 := $FFFFFFFF;
-  end else begin
-   cmpd2 := flats[cmpd1 - 1].weight; cmpd3 := dword(flats[cmpd1 - 1].color);
-   flats[cmpd1 - 1] := flats[cmpd1];
-   flats[cmpd1].weight := cmpd2; dword(flats[cmpd1].color) := cmpd3;
-   cmpd2 := cmpd1; dec(cmpd1);
-  end;
- end;
-
- // Penalise near-matches on the flats list.
- cmpd1 := 0;
- repeat
-  cmpd2 := cmpd1 + 1;
-  while cmpd2 < numflats do begin
-   cmpd3 := diffRGB(mcg_GammaInput(flats[cmpd1].color), mcg_GammaInput(flats[cmpd2].color));
-   case cmpd3 of
-     0..15: match := 10;
-     16..63: match := 9;
-     64..255: match := 8;
-     256..1023: match := 7;
-     1024..4095: match := 6;
-     4096..16383: match := 5;
-     16384..65535: match := 4;
-     65536..262143: match := 3;
-     262144..1048575: match := 2;
-     1048576..4194303: match := 1;
-     else match := 0;
-   end;
-   flats[cmpd2].weight := flats[cmpd2].weight shr match + 1;
-   inc(cmpd2);
-  end;
-  inc(cmpd1);
- until cmpd1 >= numflats;
-
- // Sort the list again.
- cmpd1 := 0; cmpd2 := $FFFFFFFF;
- while cmpd1 < numflats do begin
-  if (cmpd1 = 0) or (flats[cmpd1].weight <= flats[cmpd1 - 1].weight)
-  then begin
-   if cmpd2 <> $FFFFFFFF then cmpd1 := cmpd2 else inc(cmpd1);
-   cmpd2 := $FFFFFFFF;
-  end else begin
-   cmpd2 := flats[cmpd1 - 1].weight; cmpd3 := dword(flats[cmpd1 - 1].color);
-   flats[cmpd1 - 1] := flats[cmpd1];
-   flats[cmpd1].weight := cmpd2; dword(flats[cmpd1].color) := cmpd3;
-   cmpd2 := cmpd1; dec(cmpd1);
-  end;
- end;
-
- // Filter the noise off the flats list.
- cmpd1 := 0; cmpd2 := numflats;
- while cmpd2 <> 0 do begin
-  dec(cmpd2);
-  inc(cmpd1, flats[cmpd2].weight);
- end;
- cmpd2 := 0; while cmpd2 * cmpd2 * cmpd2 < cmpd1 do inc(cmpd2);
- cmpd3 := viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey;
- cmpw1 := 0; while cmpw1 * cmpw1 < cmpd3 do inc(cmpw1);
- cmpd3 := (cmpd2 * cmpw1) div 512;
- //writeln('sum weight = ',cmpd1,'  ^.333 = ',cmpd2,'  noise floor = ',cmpd3,' (currently ',numflats,' flats)');
- // Every flat on the list has its weight decreased by this amount.
- for cmpd1 := numflats - 1 downto 0 do
-  if flats[cmpd1].weight <= cmpd3 then
-   flats[cmpd1].weight := 0
-  else
-   dec(flats[cmpd1].weight, cmpd3);
-
- // Crop the list at the far end, all flats of 0 weight must go.
- while (numflats > 1) and (flats[numflats - 1].weight = 0) do dec(numflats);
-
- //for cmpd1 := 0 to numflats - 1 do
- // write(cmpd1:4,':',strhex(dword(flats[cmpd1].color)):8,' x',flats[cmpd1].weight:5);
- //writeln; writeln('== image size: ',viewdata[0].bmpdata.sizex,'x',viewdata[0].bmpdata.sizey);
-end;
-
-procedure MakeHistogram(sr : byte);
-// Fills the viewdata[sr].bmpdata.palette array with a series of RGBA dwords,
-// one for each unique color present in the image.
-// Uses dynamic array hashing.
-var iofs, hvar, i, j, gramsize : dword;
-    hash : array[0..hgram_bucket_count - 1] of array of dword;
-    bucketitems : array[0..hgram_bucket_count - 1] of dword;
-    bitmask : dword;
-    existence : boolean;
-begin
- if (sr > high(viewdata)) or (viewdata[sr].bmpdata.image = NIL) then exit;
- // If a palette already exists, this proc will not recalculate it. If you
- // want to force a recalculation, SetLength(.bmpdata.palette, 0) first.
- if length(viewdata[sr].bmpdata.palette) <> 0 then exit;
-
- gramsize := 0;
- filldword(bucketitems, length(bucketitems), 0);
- setlength(hash[0], 0); // silence a compiler warning
-
- // Each 32-bit color (24-bit images are read as 32-bit) is read into HVAR,
- // then reduced to a 12-bit ID tag, placed in j. There are 4096 hashing
- // buckets, and each has a dynamic array list of the actual 32-bit colors
- // encountered whose ID tag pointed to that bucket. Doing this means that
- // checking for whether a particular color is already added to the list only
- // requires up to a few dozen comparisons in its bucket's list.
-
- bitmask := 0; if viewdata[sr].alpha = 3 then bitmask := $FF000000;
- iofs := viewdata[sr].bmpdata.sizex * viewdata[sr].bmpdata.sizey * viewdata[sr].alpha;
- while iofs <> 0 do begin
-  dec(iofs, viewdata[sr].alpha);
-  hvar := dword((viewdata[sr].bmpdata.image + iofs)^) or bitmask;
-  j := (hvar and $7FF) xor (hvar shr 11);
-  j := (j xor (j shr 11)) and $FFF;
-  if bucketitems[j] = 0 then begin // empty bucket? allocate space
-   setlength(hash[j], 64);
-   bucketitems[j] := 1;
-   hash[j][0] := hvar;
-   inc(gramsize);
-  end else begin // non-empty bucket; check for a match among listed colors
-   existence := FALSE;
-   i := bucketitems[j];
-   while i <> 0 do begin
-    dec(i);
-    if hash[j][i] = hvar then begin existence := TRUE; break; end;
-   end;
-   if existence = FALSE then begin // no match exists! add new to bucket
-    if bucketitems[j] = dword(length(hash[j])) then setlength(hash[j], length(hash[j]) + 64);
-    hash[j][bucketitems[j]] := hvar;
-    inc(bucketitems[j]);
-    inc(gramsize);
-   end;
-  end;
- end;
-
- // Shift the color list into viewdata:
- // Go through all 4096 buckets, and sequentially dump the color list array
- // contents from each into the viewdata gram.
- setlength(viewdata[sr].bmpdata.palette, gramsize);
- hvar := 0;
- for iofs := high(bucketitems) downto 0 do begin
-  if bucketitems[iofs] <> 0 then begin
-   for i := 0 to bucketitems[iofs] - 1 do begin
-    dword(viewdata[sr].bmpdata.palette[hvar]) := hash[iofs][i];
-    inc(hvar);
-   end;
-  end;
- end;
-end;
+{$include bcc_eval.pas}
 
 procedure RedrawView(sr : byte);
 // Renders the raw bitmap into a buffer that the system can display.
@@ -1755,946 +1350,7 @@ begin
  if sr = 0 then DetectFlats;
 end;
 
-// --------------------------------------------------------------------------
-// The color compression algorithm
-//
-// New ideas:
-// - every pe whose sphere of influence reaches an outermost color may only
-//   choose between the outermost colors when optimising its position
-// - outermost colors should probably be marked as such during hgram creation
-//   so any color ...?
-
-// Working variables
-var wgram : array of record
-      color : RGBA64;
-      pal : word;
-    end;
-    dithertab : array of record
-      pal1, pal2 : word;
-      mix : byte;
-    end;
-    offenders : array of record
-      who : dword; // wgram index of biggest error mapped to its pal entry
-      what : dword; // magnitude of deviation
-    end;
-    totalerror : qword;
-    //lasttotalerror : qword;
-    palusize, faktor : word;
-
-procedure Error_Calc;
-// Map every histogram color to a palette entry. Each mapping has a degree of
-// error between the palette color and the real color. Each real color with
-// the greatest deviation from the palette entry it is mapped to, is stored
-// in the OFFENDERS list.
-var i, j, k, l : dword;
-begin
- filldword(offenders[0].who, faktor * 2, 0);
- for i := high(wgram) downto 0 do begin
-  // map wgram to palette
-  k := $FFFFFFFF; // k will be the lowest difference
-  for j := high(pe) downto 0 do
-  if pe[j].status <> 0 then begin
-   l := diff(pe[j].colog, wgram[i].color);
-   if l < k then begin
-    k := l; wgram[i].pal := j; // new 1st place holder
-   end;
-  end;
-  // The wgram color [i] has been mapped to a palette entry, on deviation
-  // k. The next closest palette entry had deviation MVAR.
-
-  // During this pass, FAKTOR new palette entries will be made. Therefore,
-  // keep a FAKTOR-length list "OFFENDERS" about the biggest color deviates.
-  // OFFENDERS[0..faktor - 1] is ordered from smallest to greatest deviation.
-  if k > offenders[0].what then begin
-   if offenders[faktor - 1].what = 0 then begin
-    offenders[faktor - 1].what := k; offenders[faktor - 1].who := i;
-   end else begin
-    // Scan from the top of the list until same palette or lower error found.
-    j := faktor; l := 0;
-    while j <> 0 do begin
-     dec(j);
-     if wgram[offenders[j].who].pal = wgram[i].pal then begin l := 1; break; end;
-     if offenders[j].what < k then begin l := 2; break; end;
-    end;
-    if l = 1 then begin // same palette was encountered!
-     // if the existing offender, mapped to the same palette, has less error
-     // than the new one, the old can be overwritten by the new. Otherwise
-     // the new one can be scrapped right out.
-     if offenders[j].what < k then begin
-      offenders[j].what := k; offenders[j].who := i;
-     end;
-    end else begin // lower error was encountered at offenders[j].what!
-     // scan down from j to 0 to see if the same palette is somewhere
-     // there... if it is, it gets bumped out and everything between it and
-     // j is shifted down by one slot. If it is not, then everything
-     // between 0 and j is shifted down by one slot.
-     l := j;
-     while l <> 0 do begin
-      dec(l);
-      if offenders[l].who = i then break;
-     end;
-     while l < j do begin
-      offenders[l].who := offenders[l + 1].who;
-      offenders[l].what := offenders[l + 1].what;
-      inc(l);
-     end;
-     offenders[j].who := i; offenders[j].what := k;
-    end;
-   end;
-  end;
- end;
-
- // Check if any of the OFFENDERS are very close to each other. Sometimes
- // two high-deviation colors may be right next to each other, but on
- // different sides of a palette-mapping boundary. In such cases, scrap the
- // one that is lower on the list.
- i := faktor;
- while i > 1 do begin
-  dec(i);
-  j := i;
-  while j <> 0 do begin
-   dec(j);
-   if diff(wgram[offenders[i].who].color, wgram[offenders[j].who].color)
-    < offenders[j].what
-   then begin
-    for k := j to faktor - 2 do begin
-     offenders[k].who := offenders[k + 1].who;
-     offenders[k].what := offenders[k + 1].what;
-    end;
-    dec(i); dec(faktor);
-   end;
-  end;
- end;
-end;
-
-procedure Mean_Reloc;
-// This shakes the palette up, reducing the total error of all allocations.
-// First it maps all wgram colors to the palette entries. Then, any
-// non-predefined palette entry without a single mapped color is released for
-// reassigning. All other non-preset palette entries are moved to the average
-// location of the colors mapped to that entry. Centering a palette entry in
-// relation to its own colors is meant to minimise the distance from the
-// palette color to everything mapped to it. As the palette entries shift
-// around, some wgram colors get remapped.
-// Mean relocation is repeated until hardly any remapping occurs.
-var i, j, k, l, wptr, remapped : dword;
-begin
- repeat
-  totalerror := 0; remapped := 0;
-  for i := high(pe) downto 0 do filldword(pe[i].rstack, 9, 0);
-
-  for wptr := high(wgram) downto 0 do begin
-   // Find the palette entry closest to each wgram color.
-   j := $FFFFFFFF; l := 0;
-   for i := high(pe) downto 0 do if pe[i].status <> 0 then begin
-    k := diff(pe[i].colog, wgram[wptr].color);
-    if k < j then begin
-     j := k; l := i;
-    end;
-   end;
-   // Add the color to the averaging stack of that palette entry.
-   inc(pe[l].rstack, wgram[wptr].color.r);
-   inc(pe[l].gstack, wgram[wptr].color.g);
-   inc(pe[l].bstack, wgram[wptr].color.b);
-   inc(pe[l].astack, wgram[wptr].color.a);
-   inc(pe[l].matches);
-   // Track if palette mapping changed.
-   if wgram[wptr].pal <> l then begin
-    wgram[wptr].pal := l;
-    inc(remapped);
-   end;
-   // Track the total error.
-   inc(totalerror, j);
-  end;
-
-  // For all palette entries that were set during CompressColors...
-  for i := high(pe) downto 0 do
-   if pe[i].status = 1 then
-    if pe[i].matches = 0 then begin
-     // If no wgram matches, release the palette entry.
-     pe[i].status := 0;
-     dword(pe[i].colo) := dword(neutralcolor);
-     dec(palusize);
-    end else begin
-     // Recenter palette entries at the average location of their mapped
-     // colors.
-     j := pe[i].matches shr 1;
-     pe[i].colog.r := (pe[i].rstack + j) div pe[i].matches;
-     pe[i].colog.g := (pe[i].gstack + j) div pe[i].matches;
-     pe[i].colog.b := (pe[i].bstack + j) div pe[i].matches;
-     pe[i].colog.a := (pe[i].astack + j) div pe[i].matches;
-     pe[i].colo := mcg_GammaOutput(pe[i].colog);
-    end;
-
-  updatefun := TRUE;
- until (longint(remapped * remapped shl 2) <= length(wgram) * ((option.palsize - palusize) + 1))
-    or (compressing = FALSE);
-end;
-
-function CompressColors(turhuus : pointer) : ptrint;
-// Takes viewdata[0] as source, and builds a new palette that closely matches
-// the full-color image. The procedure then calculates a dithering table, and
-// renders the original image into the next free viewdata-slot using the
-// calculated palette and dithering.
-// The input pointer "turhuus" does not do much, but is apparently required
-// to be able to run this as a thread... :? The output ptrint too.
-var i, j, k, wptr : dword;
-    palu : array of dword;
-    palug : array of RGBA64;
-    diffuselist : array of dword;
-    diffusecount : dword;
-    palptr : word;
-    palumiss : boolean;
-    tempcolor : RGBA64;
-    x, y, z, alf : longint;
-    wassup : string;
-label JustRender;
-begin
- CompressColors := 0;
- if viewdata[0].bmpdata.image = NIL then begin
-  SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
-  exit;
- end;
- // remain unobtrusive, humility is key to user satisfaction
- threadsetpriority(compressorthreadID, THREAD_PRIORITY_BELOW_NORMAL);
- sleep(50);
- if compressing = FALSE then exit;
-
- // Prepare the working variables.
- setlength(palu, option.palsize);
- palusize := 0; j := 0;
- for i := high(pe) downto 0 do
-  if pe[i].status = 2 then begin
-   if i >= option.palsize then inc(j);
-   if palusize < option.palsize then begin
-    palu[palusize] := dword(pe[i].colo);
-    pe[i].colog := mcg_GammaInput(pe[i].colo);
-    inc(palusize);
-   end;
-  end;
- if j <> 0 then begin
-  wassup := 'You have ' + strdec(j) + ' pre-defined palette entries above the desired palette size. They may not be included in the processed image.' + chr(13) + 'Proceed anyway?' + chr(0);
-  i := MessageBoxA(0, @wassup[1], 'Caution' + chr(0), MB_OKCANCEL or MB_TASKMODAL);
-  if i = IDCANCEL then begin
-   SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
-   exit;
-  end;
- end;
-
- // Select the appropriate colorspace to work in.
- case option.colorspace of
-   1: diff := @diffYCC;
-   {$ifdef allowLAB}
-   2: begin
-       diff := @diffLAB; // this does not look pretty
-       if LabTable[0] = 0 then BuildLabTable;
-      end;
-   {$endif}
-   else diff := @diffRGB;
- end;
-
- // Add auto-detected flat colors to presets.
- if (option.flat_favor <> 0) and (numflats <> 0) then begin
-  i := 0;
-  while (i < numflats) and (palusize < option.palsize) do begin
-   j := length(pe);
-   while j <> 0 do begin
-    dec(j);
-    if (pe[j].status <> 0) and (dword(pe[j].colo) = dword(flats[i].color))
-    then break;
-   end;
-   if dword(pe[j].colo) <> dword(flats[i].color) then begin
-    j := 0;
-    while pe[j].status <> 0 do inc(j);
-    pe[j].status := 3;
-    pe[j].colo := flats[i].color;
-    pe[j].colog := mcg_GammaInput(flats[i].color);
-    palu[palusize] := dword(flats[i].color);
-    inc(palusize);
-   end;
-   inc(i);
-  end;
- end;
-
- // PALU now contains all preset palette entries, and all detected flats that
- // could be fit in. The values in PALU[] are 32-bit RGBA.
- // Additionally, all PE[].colo have been gamma-corrected into PE[].colog.
-
- updatefun := TRUE;
-
- if compressing = FALSE then exit;
-
- // Reserve memory.
- setlength(offenders, (option.palsize shr 3) + 1);
- setlength(palu, palusize);
- setlength(palug, palusize);
- setlength(wgram, length(viewdata[0].bmpdata.palette) + palusize);
- wptr := 0;
-
- // The original palette must be copied into WGRAM, while doing some checks.
- // 1. Keep a list of preset palette entries in PALU. Compare all PALU items
- //    to each histogram entry, and remove matching ones from PALU. At the
- //    end, PALU only has those preset palette entries with no histogram hit.
- //    New histogram entries must be added to WGRAM for all remaining PALU.
- // 2. Check if the lightness of each histogram entry falls under the
- //    darkness bias threshold. If it does, apply the DBMASK to get
- //    a quantised DARKCOLOR. Check the DARKLIST for matches. If no match,
- //    add the DARKCOLOR to DARKLIST, and to WGRAM instead of the real color.
- //    If the real color was a preset PALU hit, add that to WGRAM too.
-
- for i := high(viewdata[0].bmpdata.palette) downto 0 do begin
-  // check for PALU match
-  palumiss := TRUE;
-  j := palusize;
-  while (j <> 0) and (palumiss) do begin
-   dec(j);
-   if palu[j] = dword(viewdata[0].bmpdata.palette[i]) then palumiss := FALSE;
-  end;
-  if palumiss = FALSE then begin
-   // found a match! Remove that from PALU list and add it to the WorkingGRAM
-   // with gamma correction
-   wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[i]);
-   inc(wptr);
-   dec(palusize);
-   while j < palusize do begin
-    palu[j] := palu[j + 1];
-    inc(j);
-   end;
-  end;
-
-  // add color to wgram w/gamma
-  wgram[wptr].color := mcg_GammaInput(viewdata[0].bmpdata.palette[i]);
-  inc(wptr);
- end;
-
- // Add remaining PALU to WGRAM.
- setlength(wgram, wptr + palusize);
- while palusize <> 0 do begin
-  dec(palusize);
-  wgram[wptr].color := mcg_GammaInput(RGBquad(palu[palusize]));
-  inc(wptr);
- end;
- if compressing = FALSE then exit;
-
- // Distribute evenly around up to half of total desired palette.
- // Re-prep the palette array to check for double definitions.
- palusize := 0;
- for i := option.palsize - 1 downto 0 do
-  if (pe[i].status <> 0) then begin
-   palug[palusize] := pe[i].colog;
-   inc(palusize);
-  end;
- palptr := palusize mod option.palsize;
-
- if option.palsize - palusize = 0 then goto JustRender;
-
- // Initially place up to half of the free palette at evenly spaced values!
- // At minimum we must place one spot in every corner of the 3D RGB cube, or
- // 8 points. Just ignore alpha at this point, it's less important than the
- // actual colors.
- // option.palsize - palusize = free slots on the palette
- // i = 1 --> 2^3 = 8 points to place (place only if 16+ free slots)
- //     2 --> 3^3 = 27 points to place (place only if 54+ free slots)
- //     3 --> 4^3 = 64 points to place (place only if 128+ free slots) ...
- i := 2;
- while (i * i * i) shl 1 <= option.palsize - palusize do inc(i);
- dec(i, 2);
-
- // If the target palette size is too small for initial spot placement, and
- // no palette entries were predefined, then at least plop one initial one
- // right on the first pixel in the wgram. It'll get shaken to a better
- // position during mean_reloc.
- if (i = 0) and (palusize = 0) then begin
-  pe[0].colog := wgram[0].color;
-  pe[0].colo := mcg_GammaOutput(wgram[0].color);
-  pe[0].status := 1;
-  inc(palptr); inc(palusize);
- end;
-
- // Place the points; check first that no point was in the preset palette.
- if i <> 0 then begin
-  for x := 0 to i do
-  for y := 0 to i do
-  for z := 0 to i do begin
-   // Get the next free slot in the palette...
-   while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
-   // Calculate the point's color...
-   pe[palptr].colog.r := x * $FFFF div longint(i);
-   pe[palptr].colog.g := y * $FFFF div longint(i);
-   pe[palptr].colog.b := z * $FFFF div longint(i);
-   pe[palptr].colog.a := $FFFF;
-   // Scan the preset colors for a match...
-   j := length(palu); palumiss := TRUE;
-   while (j <> 0) and (palumiss) do begin
-    dec(j);
-    if qword(palug[j]) = qword(pe[palptr].colog) then palumiss := FALSE;
-   end;
-   if palumiss then begin
-    // No such color in the preset palette!
-    pe[palptr].status := 1;
-    inc(palusize);
-   end;
-  end;
- end;
-
- // Shake the palette up a bit to start with, eliminate any matchless ones.
- sleep(50);
- if compressing = FALSE then exit;
- wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
- SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
- mean_reloc;
-
- // Main color compression loop!
- while (palusize < option.palsize) and (compressing) do begin
-  sleep(0);
-  // Calculate the number of new palette entries to set during this loop.
-  faktor := ((option.palsize - palusize) shr 3) + 1;
-  if faktor > palusize shr 1 then faktor := (palusize shr 1) + 1;
-  // Map wgram to the existing palette, see where the biggest error is.
-  wassup := 'Scoring deviation... (' + strdec(palusize) + ')' + chr(0);
-  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
-  error_calc;
-
-  //writeln; writeln('=== Allocating ===');
-  // No colors left to allocate, but still space in palette? Call it a day.
-  if offenders[faktor - 1].what <= 1 then break;
-  // Allocate the new palette entries in the biggest error locations.
-  for i := faktor - 1 downto 0 do begin
-   while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
-   pe[palptr].colog := wgram[offenders[i].who].color;
-   pe[palptr].colo := mcg_GammaOutput(wgram[offenders[i].who].color);
-   pe[palptr].status := 1;
-   inc(palusize);
-  end;
-
-  // Shake the new palette to represent colors optimally.
-  wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
-  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
-  sleep(0);
-  mean_reloc;
- end;
-
- // This section does improve color allocation somewhat, by re-allocating
- // every palette entry one by one and seeing if it could be placed in
- // a location that would reduce total error. Unfortunately, it is very slow.
- // This could be optimised by being discriminating about which PE's to
- // attempt to re-allocate, for example only picking ones that have other
- // PE's as close neighbors (even though that shouldn't be a common state.)
- //
- // I think it might be best to rewrite the CompressColors procedure to
- // allocate everything through this least-total-error strategy, while
- // making sure to figure in benefits from dithering. When dithering, palette
- // entries should be pushed to far boundaries to preserve contrast, since
- // intermediate colors are handled by the dithering. The current algorithm
- // assumes the result will use flat rendering, so mean_reloc tends to shift
- // palette entries into the intermediate areas, thus losing contrast.
- //
- // Hmm. Treat pe pairs as lines instead of discrete points?
-
- {$define !postopop}
- {$ifdef postopop}
- // Post-operation optimisation
- if palusize = option.palsize then begin
-  wassup := 'Optimising...' + chr(0);
-  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
-
-  // Remember the current palette and its total error
-  setlength(palu, length(pe));
-  setlength(palug, length(pe));
-  lasttotalerror := totalerror;
-  for i := high(pe) downto 0 do begin
-   palu[i] := dword(pe[i].colo);
-   palug[i] := pe[i].colog;
-  end;
-  writeln('Initial total error: ',totalerror);
-
-  k := 0; palumiss := FALSE; faktor := 1;
-  repeat
-
-   // try this for all non-preset palette entries
-   i := option.palsize;
-   while (i <> 0) and (palumiss = FALSE) do begin
-    dec(i);
-    if k = i then palumiss := TRUE else
-    if pe[i].status = 1 then begin
-
-     // release the palette entry
-     pe[i].status := 0;
-     mean_reloc;
-
-     // reallocate it!
-     error_calc;
-     pe[i].colog := wgram[offenders[0].who].color;
-     pe[i].colo := mcg_GammaOutput(wgram[offenders[0].who].color);
-     pe[i].status := 1;
-     mean_reloc;
-
-     // was it an improvement?
-     if totalerror < lasttotalerror then begin
-      writeln(totalerror);
-      // Yes! Save the new palette
-      lasttotalerror := totalerror;
-      for j := high(pe) downto 0 do begin
-       palu[j] := dword(pe[j].colo);
-       palug[j] := pe[j].colog;
-      end;
-      k := i;
-     end else begin
-      // No! Restore the old palette
-      for j := high(pe) downto 0 do begin
-       dword(pe[j].colo) := palu[j];
-       pe[j].colog := palug[j];
-      end;
-     end;
-
-    end;
-   end;
-  until palumiss;
-
- end;
- writeln('Final error score: ',lasttotalerror);
- {$endif}
-
- // Now to render, through the power of dithering!
- // Lots of useful information on this at Libcaca: http://caca.zoy.org/study/
- JustRender:
- wassup := 'Rendering...' + chr(0);
- SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
-
- if option.dithering = 4 then begin
-  // Error-diffusive dithering - calculate best dither match per pixel.
-  // This uses the Sierra Lite algorithm, in serpentine order.
-  // Set up a bitmap to render the result in...
-  mcg_ForgetImage(@rendimu);
-  rendimu.sizex := viewdata[0].bmpdata.sizex;
-  rendimu.sizey := viewdata[0].bmpdata.sizey;
-  rendimu.memformat := viewdata[0].alpha - 3;
-  rendimu.bitdepth := 8;
-  getmem(rendimu.image, viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey * viewdata[0].alpha);
-
-  // PALU is the diffusion buffer, wraps around using AND k
-  // It has room for 3 rows: 2 headroom pixels + width pixels + 2 footer px
-  // and each pixel is represented by four longint values, one per channel.
-  i := (rendimu.sizex + 4) * 4 * 3;
-  k := 1; while k < i do k := k shl 1;
-  setlength(palu, k); filldword(palu[0], k, 0);
-  dec(k);
-
-  // Offenders[0] and [1] are temp variables for finding closest pal match.
-  diffusecount := 0;
-  setlength(offenders, 2);
-  // Diffuselist is used to shuffle the processing order of pixels in each
-  // row.
-  setlength(diffuselist, viewdata[0].bmpdata.sizex);
-  for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-   diffuselist[palusize] := palusize;
-  // Process the image, top-down, alternating L-to-R and R-to-L.
-  for faktor := 0 to viewdata[0].bmpdata.sizey - 1 do begin
-
-   if faktor and 7 = 0 then begin
-    wassup := 'Rendering... ' + strdec(viewdata[0].bmpdata.sizey - faktor) + chr(0);
-    SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
-   end;
-
-   // Rearrange the horizontal processing order.
-   if diffuselist[0] = 0 then begin
-    for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-     diffuselist[palusize] := viewdata[0].bmpdata.sizex - 1 - palusize;
-   end else
-    for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-     diffuselist[palusize] := palusize;
-
-   for palusize := 0 to viewdata[0].bmpdata.sizex - 1 do begin
-    // Apply diffusion mods to current pixel...
-    i := (diffusecount + diffuselist[palusize] * 4 + 8) and k;
-    wptr := faktor * viewdata[0].bmpdata.sizex + diffuselist[palusize];
-    if viewdata[0].alpha = 3 then begin
-     // 24-bit
-     x := round(longint(palu[i]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
-     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
-     x := round(longint(palu[i + 1]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].g];
-     if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[i + 2]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].b];
-     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
-     tempcolor.a := $FF;
-    end else begin
-     // 32-bit
-     tempcolor := mcg_GammaInput(RGBAarray(viewdata[0].bmpdata.image^)[wptr]);
-     x := round(longint(palu[i]) / 4) + tempcolor.r;
-     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
-     x := round(longint(palu[i + 1]) / 4) + tempcolor.g;
-     if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[i + 2]) / 4) + tempcolor.b;
-     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
-     x := round(longint(palu[i + 3]) / 4) + tempcolor.a;
-     if x < 0 then tempcolor.a := 0 else if x > 65535 then tempcolor.a := 65535 else tempcolor.a := word(x);
-    end;
-    // Tempcolor is now the modded current pixel.
-    // Clear the processed spot in the diffusion buffer, for next cycle use.
-    filldword(palu[i], 4, 0);
-    // Find the closest palette entry.
-    // Offenders[0].who tracks the closest match, [0].what tracks its error.
-    offenders[0].what := $FFFFFFFF;
-    palptr := option.palsize;
-    while palptr <> 0 do begin
-     dec(palptr);
-     offenders[1].what := diff(tempcolor, pe[palptr].colog);
-     if offenders[1].what < offenders[0].what then begin
-      offenders[0].who := palptr; offenders[0].what := offenders[1].what;
-     end;
-    end;
-    palptr := offenders[0].who;
-    // Plot the pixel with the matched palette color.
-    if viewdata[0].alpha = 3 then begin
-     RGBarray(rendimu.image^)[wptr].b := pe[palptr].colo.b;
-     RGBarray(rendimu.image^)[wptr].g := pe[palptr].colo.g;
-     RGBarray(rendimu.image^)[wptr].r := pe[palptr].colo.r;
-    end else
-     dword((rendimu.image + wptr)^) := dword(pe[palptr].colo);
-    // Calculate the per-channel error.
-    x := tempcolor.r - pe[palptr].colog.r;
-    y := tempcolor.g - pe[palptr].colog.g;
-    z := tempcolor.b - pe[palptr].colog.b;
-    alf := tempcolor.a - pe[palptr].colog.a;
-    // Stuff the error into PALU to diffuse it.
-    i := (diffusecount + diffuselist[palusize] * 4 + 4) and k; // -1x
-    if diffuselist[0] = 0 then i := (i + 8) and k; // or +1x
-    longint(palu[i]) := longint(palu[i]) + x * 2; inc(i);
-    longint(palu[i]) := longint(palu[i]) + y * 2; inc(i);
-    longint(palu[i]) := longint(palu[i]) + z * 2; inc(i);
-    longint(palu[i]) := longint(palu[i]) + alf * 2; inc(i);
-    if diffuselist[0] <> 0 then i := (i + 12) and k;
-    // -1x, +1y (or +0x, +1y if in reverse mode)
-    j := (i + viewdata[0].bmpdata.sizex * 4 + 4) and k;
-    longint(palu[j]) := longint(palu[j]) + x; inc(j);
-    longint(palu[j]) := longint(palu[j]) + y; inc(j);
-    longint(palu[j]) := longint(palu[j]) + z; inc(j);
-    longint(palu[j]) := longint(palu[j]) + alf; inc(j);
-    j := j and k; // step right
-    longint(palu[j]) := longint(palu[j]) + x; inc(j);
-    longint(palu[j]) := longint(palu[j]) + y; inc(j);
-    longint(palu[j]) := longint(palu[j]) + z; inc(j);
-    longint(palu[j]) := longint(palu[j]) + alf;
-   end;
-   diffusecount := (diffusecount + viewdata[0].bmpdata.sizex * 4 + 16) and k;
-  end;
- end
- else begin
-  // Ordered dithering types - cache a dithering table for speed
-
-  // Calculate histogram dithering values!
-  // At the same time, make a hash table for the histogram, put it in PALU.
-  // Each 32-bit RGBA color in the real gram is reduced to a hash ID, which
-  // is a PALU index. PALU[colorhash] then has the index to that color in
-  // viewdata[0].bmpdata.palette[]. Multiple colors per same hash ID get
-  // pushed ahead to the next free hash table space.
-  wptr := length(viewdata[0].bmpdata.palette);
-  diffusecount := wptr + (wptr shr 2) + 1;
-  setlength(dithertab, wptr);
-  setlength(palu, diffusecount);
-  filldword(palu[0], diffusecount, $FFFFFFFF);
-  while wptr <> 0 do begin
-   dec(wptr);
-   // For every real histogram color, put a reference in the PALU hash table.
-   // i is the hash ID for this color.
-   i := dword(viewdata[0].bmpdata.palette[wptr]) mod diffusecount;
-   // Find the first free hash table slot starting from i.
-   while palu[i] <> $FFFFFFFF do i := (i + 1) mod diffusecount;
-   // Store the palettegram index of this color.
-   palu[i] := wptr;
-
-   // For every palettegram color, also find the closest and second closest
-   // palette entry. Then test which dithering mix gives the closest result.
-   j := $FFFFFFFF; palptr := option.palsize;
-   while palptr <> 0 do begin
-    dec(palptr);
-    if pe[palptr].status <> 0 then begin
-     i := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), pe[palptr].colog);
-     if i < j then begin
-      // new closest result!
-      dithertab[wptr].pal1 := palptr; j := i;
-      if i = 0 then break; // exact match! nothing can be closer, move on
-     end;
-    end;
-   end;
-   // Dithertab[wptr].PAL1 points to the palette entry with the least
-   // difference from the real color. j remembers the difference value.
-
-   if j = 0 then begin
-    // Special case - if the closest palette entry is exactly the real color,
-    // we already know it need not be dithered, so move along.
-    dithertab[wptr].pal2 := dithertab[wptr].pal1;
-    dithertab[wptr].mix := 0;
-    continue;
-   end;
-
-   // For dithering purposes, the real color must be between PAL1 and PAL2.
-   // Now to find a PAL2 that is across the real color, from PAL1.
-   // If the distance from the real color to PAL2 is less than the distance
-   // from PAL1 to PAL2, then PAL2 is on the other side than PAL1.
-   k := $FFFFFFFF; palptr := option.palsize;
-   dithertab[wptr].pal2 := dithertab[wptr].pal1;
-   while palptr <> 0 do begin
-    dec(palptr);
-    if pe[palptr].status <> 0 then begin
-     i := diff(pe[palptr].colog, mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]));
-     if (i <= diff(pe[dithertab[wptr].pal1].colog, pe[palptr].colog))
-     and (i < k) then begin
-      dithertab[wptr].pal2 := palptr; k := i;
-     end;
-    end;
-   end;
-
-   // Now we have the two colors closest to our target - PAL1 and PAL2.
-   // Which matches best: flat PAL1, 50-50 PAL1:PAL2, or 75-25 PAL1:PAL2?
-   // (alpha is dithered just like red, green and blue, because, why not?)
-   dithertab[wptr].mix := 0;
-   if option.dithering <> 0 then begin
-    // Calculate 50-50 diff from the real color
-    tempcolor.r := (pe[dithertab[wptr].pal1].colog.r + pe[dithertab[wptr].pal2].colog.r + 1) shr 1;
-    tempcolor.g := (pe[dithertab[wptr].pal1].colog.g + pe[dithertab[wptr].pal2].colog.g + 1) shr 1;
-    tempcolor.b := (pe[dithertab[wptr].pal1].colog.b + pe[dithertab[wptr].pal2].colog.b + 1) shr 1;
-    tempcolor.a := (pe[dithertab[wptr].pal1].colog.a + pe[dithertab[wptr].pal2].colog.a + 1) shr 1;
-    i := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
-    case option.dithering of
-      1,5: if i < j then dithertab[wptr].mix := option.dithering;
-
-      2:
-      begin
-       // Calculate 75-25 diff from the real color
-       tempcolor.r := (pe[dithertab[wptr].pal1].colog.r * 3 + pe[dithertab[wptr].pal2].colog.r + 2) shr 2;
-       tempcolor.g := (pe[dithertab[wptr].pal1].colog.g * 3 + pe[dithertab[wptr].pal2].colog.g + 2) shr 2;
-       tempcolor.b := (pe[dithertab[wptr].pal1].colog.b * 3 + pe[dithertab[wptr].pal2].colog.b + 2) shr 2;
-       tempcolor.a := (pe[dithertab[wptr].pal1].colog.a * 3 + pe[dithertab[wptr].pal2].colog.a + 2) shr 2;
-       k := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), tempcolor);
-       if (k < j) and (k < i) then dithertab[wptr].mix := 2 else
-       if (i < j) then dithertab[wptr].mix := 1;
-      end;
-
-      3:
-      begin
-       // linear weight calculation, scaled to 0..8
-       k := (8 * j + (i + j) div 2) div (i + j);
-       dithertab[wptr].mix := 32 + k;
-      end;
-
-      6:
-      begin
-       // linear weight calculation, scaled to 0..2.5 (x2 for fraction)
-       k := (5 * j + (i + j) div 2) div (i + j);
-       dithertab[wptr].mix := 64 + k;
-      end;
-    end;
-
-    // Eliminate dither banding: make sure the dithering pair is in the same
-    // order, whichever of the pair is closer.
-    if (dword(pe[dithertab[wptr].pal1].colo) < dword(pe[dithertab[wptr].pal2].colo))
-    and (dithertab[wptr].mix <> 0)
-    then begin
-     i := dithertab[wptr].pal1;
-     dithertab[wptr].pal1 := dithertab[wptr].pal2;
-     dithertab[wptr].pal2 := i;
-     case dithertab[wptr].mix of
-       2: dithertab[wptr].mix := 255;
-       32..40: dithertab[wptr].mix := 80 - dithertab[wptr].mix;
-       64..69: dithertab[wptr].mix := 139 - dithertab[wptr].mix;
-     end;
-    end;
-   end;
-  end;
-
-  sleep(0);
-  //outpal;
-  //writeln('Histogram:');
-  //for i := 0 to high(viewdata[0].bmpdata.palette) do begin
-  // write(i:3,':',strhex(dword(viewdata[0].bmpdata.palette[i])):8,'    ');
-  // if i and 3 = 3 then writeln;
-  //end;
-  //writeln; writeln('Hash table:');
-  //for i := 0 to darklistentries - 1 do
-  // write(i:3,':',strhex(palu[i]):8,'    ');
-  //writeln; writeln('Dithertable:');
-  //for i := 0 to high(dithertab) do begin
-  // write(i:4,':  ',strhex(dithertab[i].pal1),'+',strhex(dithertab[i].pal2),'*',dithertab[i].mix,'  ');
-  // if i and 3 = 3 then writeln;
-  //end; writeln;
-
-  // Render the image with dithering into a new view!
-  palusize := viewdata[0].bmpdata.sizex;
-  palptr := viewdata[0].bmpdata.sizey;
-  wptr := palusize * palptr;
-  mcg_ForgetImage(@rendimu);
-  getmem(rendimu.image, wptr * viewdata[0].alpha);
-  rendimu.sizex := palusize; rendimu.sizey := palptr;
-  rendimu.memformat := viewdata[0].alpha - 3;
-  rendimu.bitdepth := 8;
-  // 1. get the next pixel from source image
-  // 2. find the color in the hash table
-  // 3. get palette indexes from the dithering table
-  // 4. decide which palette color to use based on dithering
-  {$note todo: use direct ptr access for speed}
-  if viewdata[0].alpha = 4 then begin
-   // 32-bit image rendering
-   while wptr <> 0 do begin
-    dec(wptr);
-
-    if palusize = 0 then begin
-     dec(palptr);
-     palusize := viewdata[0].bmpdata.sizex;
-    end;
-    dec(palusize);
-
-    i := dword((viewdata[0].bmpdata.image + wptr * 4)^);
-    j := i mod diffusecount;
-    while (palu[j] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[j]]) <> i)
-    do j := (j + 1) mod diffusecount;
-    j := palu[j];
-    dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal1].colo);
-    case dithertab[j].mix of
-      1:
-      if (palptr + palusize) and 1 <> 0 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-
-      2:
-      if ((palptr shl 1) + palusize) and 3 = 0 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-
-      255:
-      if ((palptr shl 1) + palusize) and 3 <> 0 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-
-      5:
-      if palptr and 1 <> 0 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-
-      32..48:
-      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-
-      64..75:
-      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
-       dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
-    end;
-   end;
-  end else begin
-   // 24-bit image rendering
-   while wptr <> 0 do begin
-    dec(wptr);
-    if palusize = 0 then begin dec(palptr); palusize := viewdata[0].bmpdata.sizex; end;
-    dec(palusize);
-    i := (RGBarray(viewdata[0].bmpdata.image^)[wptr].r shl 16)
-      or (RGBarray(viewdata[0].bmpdata.image^)[wptr].g shl 8)
-      or (RGBarray(viewdata[0].bmpdata.image^)[wptr].b)
-      or $FF000000;
-    j := i mod diffusecount;
-    while (palu[j] = $FFFFFFFF) or (dword(viewdata[0].bmpdata.palette[palu[j]]) <> i)
-     do j := (j + 1) mod diffusecount;
-    j := palu[j];
-    k := dithertab[j].pal1;
-    case dithertab[j].mix of
-      1:
-      if (palptr + palusize) and 1 <> 0 then
-       k := dithertab[j].pal2;
-
-      2:
-      if ((palptr shl 1) + palusize) and 3 = 0 then
-       k := dithertab[j].pal2;
-
-      255:
-      if ((palptr shl 1) + palusize) and 3 <> 0 then
-       k := dithertab[j].pal2;
-
-      5:
-      if palptr and 1 <> 0 then
-       k := dithertab[j].pal2;
-
-      32..48:
-      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
-       k := dithertab[j].pal2;
-
-      64..75:
-      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
-       k := dithertab[j].pal2;
-    end;
-
-    RGBarray(rendimu.image^)[wptr].b := pe[k].colo.b;
-    RGBarray(rendimu.image^)[wptr].g := pe[k].colo.g;
-    RGBarray(rendimu.image^)[wptr].r := pe[k].colo.r;
-   end;
-  end;
- end;
-
- // Clean up!
- setlength(wgram, 0); setlength(dithertab, 0);
- setlength(palu, 0); setlength(palug, 0); setlength(diffuselist, 0);
- // Fill out rendimu.palette, colors use PE index values if possible, and
- // forget the non-preset palette entries.
- setlength(rendimu.palette, option.palsize);
- wptr := 0;
- for palptr := 0 to option.palsize - 1 do begin
-  if pe[palptr].status <> 0 then begin
-   rendimu.palette[wptr] := pe[palptr].colo;
-   inc(wptr);
-  end;
-  if pe[palptr].status <> 2 then ClearPE(palptr, palptr);
- end;
- setlength(rendimu.palette, wptr);
-
- // Let the user know we're done.
- SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
-end;
-
-// --------------------------------------------------------------------------
-
-procedure ValidateHexaco;
-// The edit box should only accept hexadecimals; flush out everything else.
-// If the boxes are not empty, enable the apply button, otherwise disable.
-var mur : byte;
-    kind : string[7];
-begin
- byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
- if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
- mur := length(kind);
- while mur <> 0 do begin
-  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
-   dec(mur);
-   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
-   SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-   SendMessageA(mv_EditH[1], EM_SETSEL, mur, mur);
-   EnableWindow(mv_ButtonH[2], FALSE);
-   exit;
-  end;
-  dec(mur);
- end;
-
- if SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
-  EnableWindow(mv_ButtonH[2], TRUE);
-end;
-
-procedure ValidateAlfaco;
-// The edit box should only accept hexadecimals; flush out everything else.
-// If the boxes are not empty, enable the apply button, otherwise disable.
-var mur : byte;
-    kind : string[7];
-begin
- byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1]));
- if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
- mur := length(kind);
- while mur > 0 do begin
-  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
-   dec(mur);
-   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
-   SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
-   SendMessageA(mv_EditH[2], EM_SETSEL, mur, mur);
-   EnableWindow(mv_ButtonH[2], FALSE);
-   exit;
-  end;
-  dec(mur);
- end;
-
- if SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
-  EnableWindow(mv_ButtonH[2], TRUE);
-end;
+{$include bcc_algo.pas}
 
 // ------------------------------------------------------------------
 
@@ -3896,47 +2552,6 @@ end;
 
 // ------------------------------------------------------------------
 
-{$define !difftest}
-{$ifdef difftest}
-procedure DiffTest;
-begin
- // tiny debug segment to confirm any changes to diff routines aren't broken
- writeln('=== Testing ===');
- diff := @diffYCC;
- for i := 0 to 5 do begin
-  pe[i].colog.r := 0; pe[i].colog.g := 0; pe[i].colog.b := 0; pe[i].colog.a := $FFFF;
- end;
- pe[1].colog.r := $FFFF; pe[2].colog.r := $FFFF; pe[4].colog.r := $8000;
- pe[1].colog.g := $FFFF; pe[4].colog.g := $8000; pe[5].colog.g := $FFFF;
- pe[1].colog.b := $FFFF; pe[3].colog.b := $FFFF; pe[4].colog.b := $8000;
-
- writeln(diff(pe[0].colog, pe[1].colog));
- writeln(diff(pe[2].colog, pe[3].colog));
- writeln(diff(pe[4].colog, pe[5].colog));
- writeln(diff(pe[0].colog, pe[3].colog));
- //exit;
-
- for palusize := 10 to 19 do begin
-  i := GetTickCount;
-  for j := 0 to 256000 do begin
-   pe_used := diff(pe[0].colog, pe[1].colog);
-   pe_used := diff(pe[2].colog, pe[3].colog);
-   pe_used := diff(pe[4].colog, pe[5].colog);
-   pe_used := diff(pe[0].colog, pe[5].colog);
-  end;
-  i := GetTickCount - i;
-  dword(pe[palusize].colo) := i;
-  sleep(130);
- end;
- j := 0;
- for i := 10 to 19 do begin
-  write(dword(pe[palusize].colo),',');
-  inc(j,dword(pe[palusize].colo));
- end;
- writeln; writeln('Average: ',j div 10,' msec');
-end;
-{$endif difftest}
-
 procedure DoInits;
 var ptxt : pchar;
     txt : string;
@@ -4047,7 +2662,7 @@ begin
  setlength(pe, 256);
 
  {$ifdef allowLAB} labtable[0] := 0; {$endif}
- {$ifdef difftest} Difftest; exit; {$endif}
+ {$ifdef difftest} DiffTest; exit; {$endif}
 
  DoInits;
  MainLoop;
