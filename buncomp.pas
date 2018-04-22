@@ -1229,43 +1229,51 @@ end;
 
 procedure RedrawView(sr : byte);
 // Renders the raw bitmap into a buffer that the system can display.
-var acolorg : RGBA64;
-    sofs, dofs : dword;
-    aval : byte;
+var srcp, destp : pointer;
+    acolorg : RGBA64;
+    srccolor : RGBquad;
+    pixelcount : dword;
+    a_inverse : byte;
 begin
  if (sr > high(viewdata)) or (viewdata[sr].bmpdata.image = NIL) then exit;
 
  acolorg := mcg_GammaInput(acolor);
 
  with viewdata[sr] do begin
-  // The DIBitmap that is designated as our output buffer must have rows that
-  // have a length in bytes divisible by 4. Happily, it is a 32-bit RGBx DIB
-  // so this is not a problem.
+  // The DIBitmap in .buffy^ that is designated as our output buffer must
+  // have rows that have a length in bytes divisible by 4. Happily, it is
+  // a 32-bit RGBx DIB so this is not a problem.
 
-  sofs := bmpdata.sizex * bmpdata.sizey;
-  // 24-bit RGB rendering
-  {$note TODO: These should use direct ptr access}
+  srcp := bmpdata.image;
+  destp := buffy;
+  pixelcount := bmpdata.sizex * bmpdata.sizey;
+  // 24-bit RGB rendering.
   if alpha = 3 then begin
-   dofs := sofs * 4;
-   sofs := sofs * 3;
-   while sofs <> 0 do begin
-    dec(dofs, 4); dec(sofs, 3);
-    dword((buffy + dofs)^) := dword((bmpdata.image + sofs)^);
-    byte((buffy + dofs + 3)^) := 0; // alpha, zeroed
+   while pixelcount <> 0 do begin
+    dword(destp^) := dword(srcp^) or $FF000000; // always full alpha
+    inc(srcp, 3);
+    inc(destp, 4);
+    dec(pixelcount);
    end;
   end
   // 32-bit RGBA rendering, alpha rendering using RGBquad "acolor".
-  // Alpha is calculated linearry in a gamma-adjusted colorspace.
+  // Alpha is calculated in linear RGB space.
   else begin
-   sofs := sofs * 4;
-   while sofs <> 0 do begin
-    dec(sofs, 4);
-    dofs := dword((bmpdata.image + sofs)^);
-    aval := byte(dofs shr 24);
-    byte((buffy + sofs    )^) := mcg_RevGammaTab[(mcg_GammaTab[byte(dofs       )] * aval + acolorg.b * (aval xor $FF)) div 255];
-    byte((buffy + sofs + 1)^) := mcg_RevGammaTab[(mcg_GammaTab[byte(dofs shr  8)] * aval + acolorg.g * (aval xor $FF)) div 255];
-    byte((buffy + sofs + 2)^) := mcg_RevGammaTab[(mcg_GammaTab[byte(dofs shr 16)] * aval + acolorg.r * (aval xor $FF)) div 255];
-    byte((buffy + sofs + 3)^) := aval;
+   while pixelcount <> 0 do begin
+    dword(srccolor) := dword(srcp^);
+    inc(srcp, 4);
+    a_inverse := srccolor.a xor $FF;
+
+    byte(destp^) := mcg_RevGammaTab[(mcg_GammaTab[srccolor.b] * srccolor.a + acolorg.b * a_inverse) div 255];
+    inc(destp);
+    byte(destp^) := mcg_RevGammaTab[(mcg_GammaTab[srccolor.g] * srccolor.a + acolorg.g * a_inverse) div 255];
+    inc(destp);
+    byte(destp^) := mcg_RevGammaTab[(mcg_GammaTab[srccolor.r] * srccolor.a + acolorg.r * a_inverse) div 255];
+    inc(destp);
+    byte(destp^) := srccolor.a;
+    inc(destp);
+
+    dec(pixelcount);
    end;
   end;
 
