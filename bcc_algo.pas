@@ -182,6 +182,7 @@ function CompressColors(turhuus : pointer) : ptrint;
 // The input pointer "turhuus" does not do much, but is apparently required
 // to be able to run this as a thread... :? The output ptrint too.
 var i, j, k, wptr : dword;
+    loopx, loopy : dword;
     palu : array of dword;
     palug : array of RGBA64;
     diffuselist : array of dword;
@@ -441,7 +442,7 @@ begin
   wassup := 'Optimising...' + chr(0);
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
 
-  // Remember the current palette and its total error
+  // Remember the current palette and its total error.
   setlength(palu, length(pe));
   setlength(palug, length(pe));
   lasttotalerror := totalerror;
@@ -454,28 +455,28 @@ begin
   k := 0; palumiss := FALSE; faktor := 1;
   repeat
 
-   // try this for all non-preset palette entries
+   // Try this for all non-preset palette entries.
    i := option.palsize;
    while (i <> 0) and (palumiss = FALSE) do begin
     dec(i);
     if k = i then palumiss := TRUE else
     if pe[i].status = 1 then begin
 
-     // release the palette entry
+     // Release the palette entry.
      pe[i].status := 0;
      mean_reloc;
 
-     // reallocate it!
+     // Reallocate it!
      error_calc;
      pe[i].colog := wgram[offenders[0].who].color;
      pe[i].colo := mcg_GammaOutput(wgram[offenders[0].who].color);
      pe[i].status := 1;
      mean_reloc;
 
-     // was it an improvement?
+     // Was it an improvement?
      if totalerror < lasttotalerror then begin
       writeln(totalerror);
-      // Yes! Save the new palette
+      // Yes! Save the new palette.
       lasttotalerror := totalerror;
       for j := high(pe) downto 0 do begin
        palu[j] := dword(pe[j].colo);
@@ -483,7 +484,7 @@ begin
       end;
       k := i;
      end else begin
-      // No! Restore the old palette
+      // No! Restore the old palette.
       for j := high(pe) downto 0 do begin
        dword(pe[j].colo) := palu[j];
        pe[j].colog := palug[j];
@@ -499,21 +500,26 @@ begin
  {$endif}
 
  // Now to render, through the power of dithering!
+ // The source image is in viewdata[0].bmpdata.
+ // The compressed palette is in pe[].
+ // The dithered result goes into rendimu.
  // Lots of useful information on this at Libcaca: http://caca.zoy.org/study/
  JustRender:
  wassup := 'Rendering...' + chr(0);
  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
+ {$note todo: the whole dithering shebang needs a rewrite and modularisation}
+
+ // Set up a bitmap to render the result in...
+ mcg_ForgetImage(@rendimu);
+ rendimu.sizex := viewdata[0].bmpdata.sizex;
+ rendimu.sizey := viewdata[0].bmpdata.sizey;
+ rendimu.memformat := viewdata[0].alpha - 3;
+ rendimu.bitdepth := 8;
+ getmem(rendimu.image, rendimu.sizex * rendimu.sizey * viewdata[0].alpha);
 
  if option.dithering = 4 then begin
   // Error-diffusive dithering - calculate best dither match per pixel.
   // This uses the Sierra Lite algorithm, in serpentine order.
-  // Set up a bitmap to render the result in...
-  mcg_ForgetImage(@rendimu);
-  rendimu.sizex := viewdata[0].bmpdata.sizex;
-  rendimu.sizey := viewdata[0].bmpdata.sizey;
-  rendimu.memformat := viewdata[0].alpha - 3;
-  rendimu.bitdepth := 8;
-  getmem(rendimu.image, viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey * viewdata[0].alpha);
 
   // PALU is the diffusion buffer, wraps around using AND k
   // It has room for 3 rows: 2 headroom pixels + width pixels + 2 footer px
@@ -532,25 +538,25 @@ begin
   for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
    diffuselist[palusize] := palusize;
   // Process the image, top-down, alternating L-to-R and R-to-L.
-  for faktor := 0 to viewdata[0].bmpdata.sizey - 1 do begin
+  for loopy := 0 to viewdata[0].bmpdata.sizey - 1 do begin
 
-   if faktor and 7 = 0 then begin
-    wassup := 'Rendering... ' + strdec(viewdata[0].bmpdata.sizey - faktor) + chr(0);
+   if loopy and 7 = 0 then begin
+    wassup := 'Rendering... ' + strdec(dword(viewdata[0].bmpdata.sizey - loopy)) + chr(0);
     SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
    end;
 
    // Rearrange the horizontal processing order.
    if diffuselist[0] = 0 then begin
-    for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-     diffuselist[palusize] := viewdata[0].bmpdata.sizex - 1 - palusize;
+    for loopx := viewdata[0].bmpdata.sizex - 1 downto 0 do
+     diffuselist[loopx] := viewdata[0].bmpdata.sizex - 1 - loopx;
    end else
-    for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-     diffuselist[palusize] := palusize;
+    for loopx := viewdata[0].bmpdata.sizex - 1 downto 0 do
+     diffuselist[loopx] := loopx;
 
-   for palusize := 0 to viewdata[0].bmpdata.sizex - 1 do begin
+   for loopx := 0 to viewdata[0].bmpdata.sizex - 1 do begin
     // Apply diffusion mods to current pixel...
-    i := (diffusecount + diffuselist[palusize] * 4 + 8) and k;
-    wptr := faktor * viewdata[0].bmpdata.sizex + diffuselist[palusize];
+    i := (diffusecount + diffuselist[loopx] * 4 + 8) and k;
+    wptr := loopy * viewdata[0].bmpdata.sizex + diffuselist[loopx];
     if viewdata[0].alpha = 3 then begin
      // 24-bit
      x := round(longint(palu[i]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
@@ -593,14 +599,14 @@ begin
      RGBarray(rendimu.image^)[wptr].g := pe[palptr].colo.g;
      RGBarray(rendimu.image^)[wptr].r := pe[palptr].colo.r;
     end else
-     dword((rendimu.image + wptr)^) := dword(pe[palptr].colo);
+     dword((rendimu.image + wptr * 4)^) := dword(pe[palptr].colo);
     // Calculate the per-channel error.
     x := tempcolor.r - pe[palptr].colog.r;
     y := tempcolor.g - pe[palptr].colog.g;
     z := tempcolor.b - pe[palptr].colog.b;
     alf := tempcolor.a - pe[palptr].colog.a;
     // Stuff the error into PALU to diffuse it.
-    i := (diffusecount + diffuselist[palusize] * 4 + 4) and k; // -1x
+    i := (diffusecount + diffuselist[loopx] * 4 + 4) and k; // -1x
     if diffuselist[0] = 0 then i := (i + 8) and k; // or +1x
     longint(palu[i]) := longint(palu[i]) + x * 2; inc(i);
     longint(palu[i]) := longint(palu[i]) + y * 2; inc(i);
@@ -693,7 +699,7 @@ begin
    // (alpha is dithered just like red, green and blue, because, why not?)
    dithertab[wptr].mix := 0;
    if option.dithering <> 0 then begin
-    // Calculate 50-50 diff from the real color
+    // Calculate 50-50 diff from the real color.
     tempcolor.r := (pe[dithertab[wptr].pal1].colog.r + pe[dithertab[wptr].pal2].colog.r + 1) shr 1;
     tempcolor.g := (pe[dithertab[wptr].pal1].colog.g + pe[dithertab[wptr].pal2].colog.g + 1) shr 1;
     tempcolor.b := (pe[dithertab[wptr].pal1].colog.b + pe[dithertab[wptr].pal2].colog.b + 1) shr 1;
@@ -704,7 +710,7 @@ begin
 
       2:
       begin
-       // Calculate 75-25 diff from the real color
+       // Calculate 75-25 diff from the real color.
        tempcolor.r := (pe[dithertab[wptr].pal1].colog.r * 3 + pe[dithertab[wptr].pal2].colog.r + 2) shr 2;
        tempcolor.g := (pe[dithertab[wptr].pal1].colog.g * 3 + pe[dithertab[wptr].pal2].colog.g + 2) shr 2;
        tempcolor.b := (pe[dithertab[wptr].pal1].colog.b * 3 + pe[dithertab[wptr].pal2].colog.b + 2) shr 2;
@@ -716,14 +722,14 @@ begin
 
       3:
       begin
-       // linear weight calculation, scaled to 0..8
+       // Linear weight calculation, scaled to 0..8.
        k := (8 * j + (i + j) div 2) div (i + j);
        dithertab[wptr].mix := 32 + k;
       end;
 
       6:
       begin
-       // linear weight calculation, scaled to 0..2.5 (x2 for fraction)
+       // Linear weight calculation, scaled to 0..2.5 (x2 for fraction).
        k := (5 * j + (i + j) div 2) div (i + j);
        dithertab[wptr].mix := 64 + k;
       end;
@@ -763,14 +769,9 @@ begin
   //end; writeln;
 
   // Render the image with dithering into a new view!
-  palusize := viewdata[0].bmpdata.sizex;
-  palptr := viewdata[0].bmpdata.sizey;
-  wptr := palusize * palptr;
-  mcg_ForgetImage(@rendimu);
-  getmem(rendimu.image, wptr * viewdata[0].alpha);
-  rendimu.sizex := palusize; rendimu.sizey := palptr;
-  rendimu.memformat := viewdata[0].alpha - 3;
-  rendimu.bitdepth := 8;
+  loopx := viewdata[0].bmpdata.sizex;
+  loopy := viewdata[0].bmpdata.sizey;
+  wptr := loopx * loopy;
   // 1. get the next pixel from source image
   // 2. find the color in the hash table
   // 3. get palette indexes from the dithering table
@@ -781,11 +782,11 @@ begin
    while wptr <> 0 do begin
     dec(wptr);
 
-    if palusize = 0 then begin
-     dec(palptr);
-     palusize := viewdata[0].bmpdata.sizex;
+    if loopx = 0 then begin
+     dec(loopy);
+     loopx := viewdata[0].bmpdata.sizex;
     end;
-    dec(palusize);
+    dec(loopx);
 
     i := dword((viewdata[0].bmpdata.image + wptr * 4)^);
     j := i mod diffusecount;
@@ -795,27 +796,27 @@ begin
     dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal1].colo);
     case dithertab[j].mix of
       1:
-      if (palptr + palusize) and 1 <> 0 then
+      if (loopy + loopx) and 1 <> 0 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
 
       2:
-      if ((palptr shl 1) + palusize) and 3 = 0 then
+      if ((loopy shl 1) + loopx) and 3 = 0 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
 
       255:
-      if ((palptr shl 1) + palusize) and 3 <> 0 then
+      if ((loopy shl 1) + loopx) and 3 <> 0 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
 
       5:
-      if palptr and 1 <> 0 then
+      if loopy and 1 <> 0 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
 
       32..48:
-      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
+      if octadtab[loopy and 3, loopx and 3] <= dithertab[j].mix - 32 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
 
       64..75:
-      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
+      if plusdtab[loopy mod 5, loopx mod 5] <= (dithertab[j].mix - 64) shr 1 then
        dword((rendimu.image + wptr * 4)^) := dword(pe[dithertab[j].pal2].colo);
     end;
    end;
@@ -823,8 +824,11 @@ begin
    // 24-bit image rendering
    while wptr <> 0 do begin
     dec(wptr);
-    if palusize = 0 then begin dec(palptr); palusize := viewdata[0].bmpdata.sizex; end;
-    dec(palusize);
+    if loopx = 0 then begin
+     dec(loopy);
+     loopx := viewdata[0].bmpdata.sizex;
+    end;
+    dec(loopx);
     i := (RGBarray(viewdata[0].bmpdata.image^)[wptr].r shl 16)
       or (RGBarray(viewdata[0].bmpdata.image^)[wptr].g shl 8)
       or (RGBarray(viewdata[0].bmpdata.image^)[wptr].b)
@@ -836,27 +840,27 @@ begin
     k := dithertab[j].pal1;
     case dithertab[j].mix of
       1:
-      if (palptr + palusize) and 1 <> 0 then
+      if (loopy + loopx) and 1 <> 0 then
        k := dithertab[j].pal2;
 
       2:
-      if ((palptr shl 1) + palusize) and 3 = 0 then
+      if ((loopy shl 1) + loopx) and 3 = 0 then
        k := dithertab[j].pal2;
 
       255:
-      if ((palptr shl 1) + palusize) and 3 <> 0 then
+      if ((loopy shl 1) + loopx) and 3 <> 0 then
        k := dithertab[j].pal2;
 
       5:
-      if palptr and 1 <> 0 then
+      if loopy and 1 <> 0 then
        k := dithertab[j].pal2;
 
       32..48:
-      if octadtab[palptr and 3, palusize and 3] <= dithertab[j].mix - 32 then
+      if octadtab[loopy and 3, loopx and 3] <= dithertab[j].mix - 32 then
        k := dithertab[j].pal2;
 
       64..75:
-      if plusdtab[palptr mod 5, palusize mod 5] <= (dithertab[j].mix - 64) shr 1 then
+      if plusdtab[loopy mod 5, loopx mod 5] <= (dithertab[j].mix - 64) shr 1 then
        k := dithertab[j].pal2;
     end;
 

@@ -22,6 +22,8 @@ program buncomp;
 // Try placing virtual palette entries at dithered color points; 50-50 puts
 // one virtual pe halfway between its parent colors, 75-25 puts three, etc.
 
+// - Rendered/dithered viewdata should always be 32bpp for easier
+//   implementation, but with a flag indicating whether alpha data is real
 // - Alpha in diffRGB etc must be premultiplied, otherwise a preset palette
 //   item with a colored alpha may be ignored in favor of a solid black
 // - Test different diffRGB functions, pick one or two best:
@@ -30,7 +32,6 @@ program buncomp;
 //   (linear vs. sRGB while summing squares)
 //   = 12 combinations; use on 2 photos, 2 vector art, 2 gradient stress pics
 // - mclogo_wip with newdiffrgb gets stuck in infinite loop??
-// - Sierra lite dithering broken? when alpha present?
 // - Paste to clipboard should use a fast PNG, with dib v4/5 as fallback
 // - Further modularise the code
 // - Source image hgram buckets should probably persist, and increase to 8k?
