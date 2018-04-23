@@ -36,7 +36,7 @@ begin
   // map wgram to palette
   k := $FFFFFFFF; // k will be the lowest difference
   for j := high(pe) downto 0 do
-  if pe[j].status <> 0 then begin
+  if pe[j].status <> PE_FREE then begin
    l := diff(pe[j].colog, wgram[i].color);
    if l < k then begin
     k := l; wgram[i].pal := j; // new 1st place holder
@@ -129,7 +129,7 @@ begin
   for wptr := high(wgram) downto 0 do begin
    // Find the palette entry closest to each wgram color.
    j := $FFFFFFFF; l := 0;
-   for i := high(pe) downto 0 do if pe[i].status <> 0 then begin
+   for i := high(pe) downto 0 do if pe[i].status <> PE_FREE then begin
     k := diff(pe[i].colog, wgram[wptr].color);
     if k < j then begin
      j := k; l := i;
@@ -152,10 +152,10 @@ begin
 
   // For all palette entries that were set during CompressColors...
   for i := high(pe) downto 0 do
-   if pe[i].status = 1 then
+   if pe[i].status = PE_ALLOCATED then
     if pe[i].matches = 0 then begin
      // If no wgram matches, release the palette entry.
-     pe[i].status := 0;
+     pe[i].status := PE_FREE;
      dword(pe[i].colo) := dword(neutralcolor);
      dec(palusize);
     end else begin
@@ -207,7 +207,7 @@ begin
  setlength(palu, option.palsize);
  palusize := 0; j := 0;
  for i := high(pe) downto 0 do
-  if pe[i].status = 2 then begin
+  if pe[i].status = PE_FIXED then begin
    if i >= option.palsize then inc(j);
    if palusize < option.palsize then begin
     palu[palusize] := dword(pe[i].colo);
@@ -243,13 +243,13 @@ begin
    j := length(pe);
    while j <> 0 do begin
     dec(j);
-    if (pe[j].status <> 0) and (dword(pe[j].colo) = dword(flats[i].color))
+    if (pe[j].status <> PE_FREE) and (dword(pe[j].colo) = dword(flats[i].color))
     then break;
    end;
    if dword(pe[j].colo) <> dword(flats[i].color) then begin
     j := 0;
-    while pe[j].status <> 0 do inc(j);
-    pe[j].status := 3;
+    while pe[j].status <> PE_FREE do inc(j);
+    pe[j].status := PE_AUTOFLAT;
     pe[j].colo := flats[i].color;
     pe[j].colog := mcg_GammaInput(flats[i].color);
     palu[palusize] := dword(flats[i].color);
@@ -323,7 +323,7 @@ begin
  // Re-prep the palette array to check for double definitions.
  palusize := 0;
  for i := option.palsize - 1 downto 0 do
-  if (pe[i].status <> 0) then begin
+  if (pe[i].status <> PE_FREE) then begin
    palug[palusize] := pe[i].colog;
    inc(palusize);
   end;
@@ -350,7 +350,7 @@ begin
  if (i = 0) and (palusize = 0) then begin
   pe[0].colog := wgram[0].color;
   pe[0].colo := mcg_GammaOutput(wgram[0].color);
-  pe[0].status := 1;
+  pe[0].status := PE_ALLOCATED;
   inc(palptr); inc(palusize);
  end;
 
@@ -360,7 +360,7 @@ begin
   for y := 0 to i do
   for z := 0 to i do begin
    // Get the next free slot in the palette...
-   while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
+   while pe[palptr].status <> PE_FREE do palptr := (palptr + 1) mod option.palsize;
    // Calculate the point's color...
    pe[palptr].colog.r := x * $FFFF div longint(i);
    pe[palptr].colog.g := y * $FFFF div longint(i);
@@ -374,7 +374,7 @@ begin
    end;
    if palumiss then begin
     // No such color in the preset palette!
-    pe[palptr].status := 1;
+    pe[palptr].status := PE_ALLOCATED;
     inc(palusize);
    end;
   end;
@@ -403,10 +403,10 @@ begin
   if offenders[faktor - 1].what <= 1 then break;
   // Allocate the new palette entries in the biggest error locations.
   for i := faktor - 1 downto 0 do begin
-   while pe[palptr].status <> 0 do palptr := (palptr + 1) mod option.palsize;
+   while pe[palptr].status <> PE_FREE do palptr := (palptr + 1) mod option.palsize;
    pe[palptr].colog := wgram[offenders[i].who].color;
    pe[palptr].colo := mcg_GammaOutput(wgram[offenders[i].who].color);
-   pe[palptr].status := 1;
+   pe[palptr].status := PE_ALLOCATED;
    inc(palusize);
   end;
 
@@ -651,7 +651,7 @@ begin
    j := $FFFFFFFF; palptr := option.palsize;
    while palptr <> 0 do begin
     dec(palptr);
-    if pe[palptr].status <> 0 then begin
+    if pe[palptr].status <> PE_FREE then begin
      i := diff(mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]), pe[palptr].colog);
      if i < j then begin
       // new closest result!
@@ -679,7 +679,7 @@ begin
    dithertab[wptr].pal2 := dithertab[wptr].pal1;
    while palptr <> 0 do begin
     dec(palptr);
-    if pe[palptr].status <> 0 then begin
+    if pe[palptr].status <> PE_FREE then begin
      i := diff(pe[palptr].colog, mcg_GammaInput(viewdata[0].bmpdata.palette[wptr]));
      if (i <= diff(pe[dithertab[wptr].pal1].colog, pe[palptr].colog))
      and (i < k) then begin
@@ -875,11 +875,11 @@ begin
  setlength(rendimu.palette, option.palsize);
  wptr := 0;
  for palptr := 0 to option.palsize - 1 do begin
-  if pe[palptr].status <> 0 then begin
+  if pe[palptr].status <> PE_FREE then begin
    rendimu.palette[wptr] := pe[palptr].colo;
    inc(wptr);
   end;
-  if pe[palptr].status <> 2 then ClearPE(palptr, palptr);
+  if pe[palptr].status <> PE_FIXED then ClearPE(palptr, palptr);
  end;
  setlength(rendimu.palette, wptr);
 

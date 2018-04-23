@@ -150,11 +150,12 @@ var mainsizex, mainsizey, magicx, magicy : word;
     labtable : array[0..65535] of word;
     {$endif}
 
+type pe_status = (PE_FREE, PE_ALLOCATED, PE_FIXED, PE_AUTOFLAT);
     // Palette entries, both presets and algorithmically calculated go here.
-    pe : array of record
+var pe : array of record
       colo : RGBquad;
       colog : RGBA64; // for the gamma-corrected values
-      status : byte; // 0 free, 1 used, 2 used fixed, 3 detected flat
+      status : pe_status;
       rstack, gstack, bstack, astack : qword;
       matches : dword;
     end;
@@ -360,7 +361,7 @@ begin
 
  for i := maxi downto mini do begin
   dword(pe[i].colo) := dword(neutralcolor);
-  pe[i].status := 0;
+  pe[i].status := PE_FREE;
  end;
 end;
 
@@ -394,7 +395,7 @@ begin
  writeln(conff, '### Color presets ###');
  writeln(conff, '// Use hex format RGBA (eg. C: 8020F0FF), 00 alpha is fully transparent');
  writeln(conff);
- for i := 0 to high(pe) do if pe[i].status <> 0 then
+ for i := 0 to high(pe) do if pe[i].status <> PE_FREE then
   writeln(conff, 'C: ' + hexifycolor(pe[i].colo) + strhex(pe[i].colo.a));
  close(conff);
  WriteIni := 0;
@@ -453,7 +454,7 @@ begin
      begin
       i := valhex(copy(tux, 2, length(tux) - 1));
       dword(pe[pe_used].colo) := (i shr 8) or (i shl 24);
-      pe[pe_used].status := 2;
+      pe[pe_used].status := PE_FIXED;
       pe_used := (pe_used + 1) mod dword(length(pe));
      end;
    end;
@@ -493,10 +494,10 @@ begin
  for lix := 0 to option.palsize - 1 do begin
   if lix and 7 = 0 then write(lix:5,': ');
   case pe[lix].status of
-    0: write('-------- ');
-    1: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
-    2: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
-    3: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
+    PE_FREE: write('-------- ');
+    PE_ALLOCATED: write(lowercase(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a)) + ' ');
+    PE_FIXED: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + ' ');
+    PE_AUTOFLAT: write(hexifycolor(pe[lix].colo) + strhex(pe[lix].colo.a) + '!');
   end;
   if (lix and 7 = 7) or (lix + 1 = option.palsize) then writeln;
  end;
@@ -605,9 +606,12 @@ begin
    TextOut(mv_ListBuffyDC, 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
   end;
 
-  if pe[pali].status = 0 then blah := 'Not set' else blah := hexifycolor(pe[pali].colo);
+  if pe[pali].status = PE_FREE then
+   blah := 'Not set'
+  else
+   blah := hexifycolor(pe[pali].colo);
   TextOut(mv_ListBuffyDC, (magicx shr 2) + 8, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
-  if pe[pali].status <> 0 then begin
+  if pe[pali].status <> PE_FREE then begin
    SetTextAlign(mv_ListBuffyDC, TA_RIGHT);
    blah := hextable[pe[pali].colo.a shr 4] + hextable[pe[pali].colo.a and $F];
    TextOut(mv_ListBuffyDC, magicx - 4, mlp * (magicy shr 3) + 3, @blah[1], length(blah));
@@ -935,7 +939,7 @@ begin
  // copy the view's histogram to a new active palette
  for mur := high(viewdata[winpo].bmpdata.palette) downto 0 do begin
   pe[mur].colo := viewdata[winpo].bmpdata.palette[mur];
-  pe[mur].status := 2;
+  pe[mur].status := PE_FIXED;
  end;
  // update the UI
  DrawMagicList;
@@ -1635,7 +1639,7 @@ begin
     kind := 'Selected: ' + strdec(pe_used) + chr(0);
     SendMessageA(mv_StaticH[6], WM_SETTEXT, 0, ptrint(@kind[1]));
     DrawMagicList;
-    if pe[pe_used].status = 0 then begin
+    if pe[pe_used].status = PE_FREE then begin
      kind := chr(0);
      SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
      kind := 'FF' + chr(0);
@@ -1937,7 +1941,7 @@ begin
       // GUI button: Apply
       62:
       begin
-       pe[pe_used].status := 2;
+       pe[pe_used].status := PE_FIXED;
        byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
        i := valhex(kind);
        pe[pe_used].colo.r := byte(i shr 16);
