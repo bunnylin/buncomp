@@ -26,6 +26,8 @@ program buncomp;
 //   implementation, but with a flag indicating whether alpha data is real
 // - Alpha in diffRGB etc must be premultiplied, otherwise a preset palette
 //   item with a colored alpha may be ignored in favor of a solid black
+// - Diff result won't fit in 32bits without some loss of accuracy, since
+//   premultiplied alpha and squaring adds up; use qword or double?
 // - Test different diffRGB functions, pick one or two best:
 //   (linear vs. sRGB while calculating delta) x
 //   (super-weighed vs. weighed vs. non) x
@@ -35,6 +37,7 @@ program buncomp;
 // - Paste to clipboard should use a fast PNG, with dib v4/5 as fallback
 // - Further modularise the code
 // - Source image hgram buckets should probably persist, and increase to 8k?
+// - Colors should possibly keep alpha-multiplied copies of selves in cache?
 // - Add command line functionality if not yet preset, add to documentation
 // - Add menu select "Export using minimal palette", default yes; when off,
 //   saves and copies to clipboard in 32-bit RGBA
@@ -272,14 +275,14 @@ var ert : string;
 begin
  mv_EndProgram := TRUE; compressing := FALSE;
 
- // Kill the worker thread
+ // Kill the worker thread.
  if compressorthreadID <> 0 then begin
   WaitForThreadTerminate(compressorthreadID, 1000);
   i := KillThread(compressorthreadID);
   CloseHandle(compressorthreadhandle); // trying to avoid handle leaking
  end;
 
- // Destroy the views
+ // Destroy the views.
  for i := 0 to high(viewdata) do begin
   mcg_ForgetImage(@viewdata[i].bmpdata);
   if viewdata[i].winhandu <> 0 then DestroyWindow(viewdata[i].winhandu);
@@ -291,34 +294,34 @@ begin
    viewdata[i].buffyh := 0;
   end;
  end;
- // Destroy the entertainer
+ // Destroy the entertainer.
  if funwinhandle <> 0 then DestroyWindow(funwinhandle);
- // Destroy the magic color list
+ // Destroy the magic color list.
  if mv_ListH[1] <> 0 then DestroyWindow(mv_ListH[1]);
  if mv_ListBuffyHandle <> 0 then begin
   SelectObject(mv_ListBuffyDC, mv_OldListBuffyHandle);
   DeleteDC(mv_ListBuffyDC);
   DeleteObject(mv_ListBuffyHandle);
  end;
- // Destroy the help window
+ // Destroy the help window.
  if HelpWinH <> 0 then DestroyWindow(HelpWinH);
- // Destroy the fun palette picture
+ // Destroy the fun palette picture.
  if mv_FunDIBhandle <> 0 then DeleteObject(mv_FunDIBhandle);
- // Destroy the main window
+ // Destroy the main window.
  if mv_MainWinH <> 0 then DestroyWindow(mv_MainWinH);
 
- // Destroy everything else
+ // Destroy everything else.
  if mv_ContextMenu <> 0 then DestroyMenu(mv_ContextMenu);
 
- // Free whatever other memory was reserved
+ // Free whatever other memory was reserved.
  mcg_ForgetImage(@rendimu);
  mcg_ForgetImage(@tempbmp);
 
- // Release fonts
+ // Release fonts.
  if mv_FontH[1] <> 0 then deleteObject(mv_FontH[1]);
  if mv_FontH[2] <> 0 then deleteObject(mv_FontH[2]);
 
- // Print out the error message if exiting unnaturally
+ // Print out the error message if exiting unnaturally.
  if (erroraddr <> NIL) or (exitcode <> 0) then begin
   ert := errortxt(exitcode) + chr(0);
   MessageBoxA(0, @ert[1], NIL, MB_OK);
@@ -485,10 +488,64 @@ begin
  readini := 0;
 end;
 
+procedure SaveConfig(ownerWindow : hWnd);
+var kind, txt, strutsi : string;
+    openfilurec : openfilename;
+    i : dword;
+begin
+ kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
+ txt := chr(0); strutsi := homedir + chr(0);
+ fillbyte(openfilurec, sizeof(openfilurec), 0);
+ with openfilurec do begin
+  lStructSize := 76; // sizeof gives incorrect result?
+  hwndOwner := ownerWindow;
+  lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+  nFilterIndex := 1;
+  lpstrFile := @txt[1]; nMaxFile := 255;
+  lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
+  lpstrDefExt := @kind[31]; // "ini"
+  Flags := OFN_NOCHANGEDIR or OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST;
+ end;
+
+ if GetSaveFileNameA(@openfilurec) then begin
+  i := WriteIni(openfilurec.lpstrfile);
+  if i <> 0 then begin
+   txt := errortxt(i) + chr(0);
+   MessageBoxA(ownerWindow, @txt[1], NIL, MB_OK);
+  end;
+ end;
+end;
+
+procedure LoadConfig(ownerWindow : hWnd);
+var kind, txt, strutsi : string;
+    openfilurec : openfilename;
+    i : dword;
+begin
+ kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
+ txt := chr(0); strutsi := homedir + chr(0);
+ fillbyte(openfilurec, sizeof(openfilurec), 0);
+ with openfilurec do begin
+  lStructSize := 76; // sizeof gives incorrect result?
+  hwndOwner := ownerWindow;
+  lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
+  nFilterIndex := 1;
+  lpstrFile := @txt[1]; nMaxFile := 255;
+  lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
+  Flags := OFN_FILEMUSTEXIST or OFN_NOCHANGEDIR;
+ end;
+ if GetOpenFileNameA(@openfilurec) then begin
+  i := ReadIni(openfilurec.lpstrfile);
+  if i <> 0 then begin
+   txt := errortxt(i) + chr(0);
+   MessageBoxA(ownerWindow, @txt[1], NIL, MB_OK);
+  end;
+ end;
+end;
+
 // ------------------------------------------------------------------
 
 procedure outpal;
-// Debugging function, prints the palette state into an attached console
+// Debugging function, prints the palette state into an attached console.
 var lix : word;
 begin
  writeln('=== Palette state ===');
@@ -646,7 +703,7 @@ begin
   for x := 0 to funsizex - 1 do begin
    q := pvar + (x * rootsizex) div funsizex;
    aval := pe[q].colo.a;
-   // for pretend alpha, a black and white xor pattern!
+   // For pretend alpha, a black and white xor pattern!
    avar := ((x xor y) and $3E) shl 1 + $40;
    avar := mcg_GammaTab[avar] * (aval xor $FF);
    byte(funpoku^) := mcg_RevGammaTab[(mcg_GammaTab[pe[q].colo.b] * aval + avar) div 255];
@@ -685,10 +742,10 @@ begin
  // 256 or less colors, index 'em!
  if length(viewdata[winpo].bmpdata.palette) <= 256 then
  with viewdata[winpo] do begin
-  // store the palette
+  // Store the palette.
   setlength(whither^.palette, length(bmpdata.palette));
   move(bmpdata.palette[0], whither^.palette[0], length(bmpdata.palette) * 4);
-  // decide which bitdepth to pack into
+  // Decide which bitdepth to pack into.
   case length(bmpdata.palette) of
     0..2: whither^.bitdepth := 1;
     3..4: if bytealign = 1 then whither^.bitdepth := 2
@@ -697,18 +754,18 @@ begin
     5..16: whither^.bitdepth := 4;
     17..256: whither^.bitdepth := 8;
   end;
-  // calculate various descriptive numbers
+  // Calculate various descriptive numbers.
   dec(bytealign);
   whither^.sizex := (((bmpdata.sizex * whither^.bitdepth + 7) shr 3) + bytealign) and ($FFFFFFFF - bytealign);
   whither^.sizey := bmpdata.sizey;
   getmem(whither^.image, whither^.sizex * bmpdata.sizey);
   fillbyte(whither^.image^, whither^.sizex * bmpdata.sizey, 0);
   whither^.memformat := 4 + (alpha - 3);
-  // match each pixel to the palette, store the indexes as the new image
-  // svar is the source offset, zvar is the 29.3 fixed point target offset
+  // Match each pixel to the palette, store the indexes as the new image
+  // svar is the source offset, zvar is the 29.3 fixed point target offset.
   destofs := 0; srcofs := 0; bitptr := 8;
   if alpha = 4 then begin
-   // if the source image is 32-bit RGBA, do this
+   // If the source image is 32-bit RGBA, do this.
    for yvar := bmpdata.sizey - 1 downto 0 do begin
     for xvar := bmpdata.sizex - 1 downto 0 do begin
      if bitptr = 0 then begin
@@ -721,17 +778,17 @@ begin
      byte((whither^.image + destofs)^) := byte((whither^.image + destofs)^) or byte(packedpixel shl bitptr);
      inc(srcofs);
     end;
-    // All rows are padded to a full byte width
+    // All rows are padded to a full byte width.
     if bitptr < 8 then begin
      bitptr := 8;
      inc(destofs);
     end;
-    // Byte align to the required width, byte for PNGs, dword for BMPs
+    // Byte align to the required width, byte for PNGs, dword for BMPs.
     destofs := (destofs + bytealign) and ($FFFFFFFF - bytealign);
    end;
   end else begin
 
-   // if the source image is 24-bit RGB images, do this
+   // If the source image is 24-bit RGB images, do this.
    for yvar := bmpdata.sizey - 1 downto 0 do begin
     for xvar := bmpdata.sizex - 1 downto 0 do begin
      if bitptr = 0 then begin
@@ -746,19 +803,19 @@ begin
      byte((whither^.image + destofs)^) := byte((whither^.image + destofs)^) or byte(packedpixel shl bitptr);
      inc(srcofs);
     end;
-    // All rows are padded to a full byte width
+    // All rows are padded to a full byte width.
     if bitptr < 8 then begin
      bitptr := 8;
      inc(destofs);
     end;
-    // Byte align to the required width, byte for PNGs, dword for BMPs
+    // Byte align to the required width, byte for PNGs, dword for BMPs.
     destofs := (destofs + bytealign) and ($FFFFFFFF - bytealign);
    end;
   end;
 
  end
 
- // More than 256 colors
+ // More than 256 colors.
  else with viewdata[winpo] do begin
   dec(bytealign);
   dibwidth := ((bmpdata.sizex * alpha) + bytealign) and ($FFFFFFFF - bytealign);
@@ -798,7 +855,7 @@ begin
  end;
  if GetSaveFileNameA(@openfilurec) = FALSE then exit;
 
- // We have the filename, so prepare the file
+ // We have the filename, so prepare the file.
  txt := openfilurec.lpstrfile;
  if upcase(copy(txt, length(txt) - 3, 4)) <> '.PNG' then txt := txt + '.png';
  assign(filu, txt);
@@ -809,12 +866,12 @@ begin
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
 
- // Squash the image into the smallest uncompressed space possible
+ // Squash the image into the smallest uncompressed space possible.
  fillbyte(newimu, sizeof(newimu), 0);
  PackView(winpo, 1, @newimu);
  newimu.sizex := viewdata[winpo].bmpdata.sizex; // use pixel, not byte width
 
- // Render the image into a compressed PNG
+ // Render the image into a compressed PNG.
  pingustream := NIL;
  i := mcg_MemorytoPNG(@newimu, @pingustream, @j);
  if i <> 0 then begin
@@ -823,7 +880,7 @@ begin
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
 
- // Write the PNG datastream into the file
+ // Write the PNG datastream into the file.
  blockwrite(filu, pingustream^, j);
  i := IOresult;
  if i <> 0 then begin
@@ -831,7 +888,7 @@ begin
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
  end;
 
- // Clean up
+ // Clean up.
  mcg_ForgetImage(@newimu); close(filu);
  freemem(pingustream); pingustream := NIL;
 end;
@@ -867,7 +924,7 @@ begin
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
  end else begin
   EmptyClipboard;
-  // Allocate a system-wide memory chunk
+  // Allocate a system-wide memory chunk.
   workhand := GlobalAlloc(GMEM_MOVEABLE, hedari.bv4Size + hedari.bv4ClrUsed * 4 + newimu.sizex * newimu.sizey);
   if workhand = 0 then begin
    txt := 'Could not allocate global memory.' + chr(0);
@@ -875,19 +932,19 @@ begin
   end else begin
    // Stuff the memory chunk with goodies!
    tonne := GlobalLock(workhand);
-   // first up: the bitmapinfoheader
+   // First up: the bitmapinfoheader.
    move((@hedari)^, tonne^, hedari.bv4Size);
    inc(tonne, hedari.bv4Size);
-   // next up: the palette, if applicable
+   // Next up: the palette, if applicable.
    if hedari.bv4ClrUsed <> 0 then begin
     move(newimu.palette[0], tonne^, hedari.bv4ClrUsed * 4);
     inc(tonne, hedari.bv4ClrUsed * 4);
    end;
 
-   // last up: the image itself! Must be bottom-up, top-down doesn't seem to
-   // work on the 9x clipboard
+   // Last up: the image itself! Must be bottom-up, top-down doesn't seem to
+   // work on the 9x clipboard.
    if newimu.memformat = 1 then begin
-    // 32-bit ABGR, must be converted to Windows' preferred BGRA
+    // 32-bit ABGR, must be converted to Windows' preferred BGRA.
     ofsu := (newimu.sizex shr 2) * dword(hedari.bv4Height - 1);
     while ofsu <> 0 do begin
      for ofx := 0 to (newimu.sizex shr 2) - 1 do begin
@@ -899,7 +956,7 @@ begin
     end;
    end
    else begin
-    // any other than 32-bit RGBA
+    // Any other than 32-bit RGBA.
     ofsu := hedari.bv4SizeImage;
     while ofsu > 0 do begin
      dec(ofsu, newimu.sizex);
@@ -916,7 +973,7 @@ begin
     GlobalFree(workhand);
    end;
   end;
-  // Clean up
+  // Clean up.
   CloseClipboard;
  end;
  mcg_ForgetImage(@newimu);
@@ -928,26 +985,51 @@ procedure ImportPalette(winpo : byte);
 var txt : string;
     mur : dword;
 begin
- // safety checks
+ // Safety checks.
  if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
  if high(viewdata[winpo].bmpdata.palette) > high(pe) then begin
   txt := 'Cannot import: this image has more colors than the maximum palette size (' + strdec(length(pe)) + ').' + chr(0);
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
- // clear the previous palette
+ // Clear the previous palette.
  if high(viewdata[winpo].bmpdata.palette) < high(pe) then
   ClearPE(length(viewdata[winpo].bmpdata.palette), high(pe));
- // copy the view's histogram to a new active palette
+ // Copy the view's histogram to a new active palette.
  for mur := high(viewdata[winpo].bmpdata.palette) downto 0 do begin
   pe[mur].colo := viewdata[winpo].bmpdata.palette[mur];
   pe[mur].status := PE_FIXED;
  end;
- // update the UI
+ // Update the UI.
  DrawMagicList;
  EnableWindow(mv_ButtonH[3], FALSE);
  colorpicking := FALSE;
  SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
  ShowWindow(mv_StaticH[7], SW_HIDE);
+end;
+
+procedure ResizeView(viewnum : dword; newx, newy : word);
+begin
+ if (viewnum >= length(viewdata))
+ or (viewdata[viewnum].bmpdata.image = NIL) then exit;
+
+ with viewdata[viewnum] do begin
+  winsizex := newx;
+  winsizey := newy;
+  // Adjust the view offset.
+  if winsizex > bmpdata.sizex * zoom then
+   viewofsx := -((winsizex - bmpdata.sizex * zoom) shr 1)
+  else if viewofsx > bmpdata.sizex * zoom - winsizex then
+   viewofsx := bmpdata.sizex * zoom - winsizex
+  else if viewofsx < 0 then
+   viewofsx := 0;
+  if winsizey > bmpdata.sizey * zoom then
+   viewofsy := -((winsizey - bmpdata.sizey * zoom) shr 1)
+  else if viewofsy > bmpdata.sizey * zoom - winsizey then
+   viewofsy := bmpdata.sizey * zoom - winsizey
+  else if viewofsy < 0 then
+   viewofsy := 0;
+  invalidaterect(winhandu, NIL, TRUE);
+ end;
 end;
 
 procedure ZoomIn(winh : handle; viewnum : byte);
@@ -1043,26 +1125,7 @@ begin
    end;
 
    // Resizing
-   wm_Size:
-   with viewdata[winpo] do begin
-    // read the new window size
-    winsizex := word(lapu);
-    winsizey := lapu shr 16;
-    // adjust the view offset
-    if winsizex > bmpdata.sizex * zoom then
-     viewofsx := -((winsizex - bmpdata.sizex * zoom) shr 1)
-    else if viewofsx > bmpdata.sizex * zoom - winsizex then
-     viewofsx := bmpdata.sizex * zoom - winsizex
-    else if viewofsx < 0 then
-     viewofsx := 0;
-    if winsizey > bmpdata.sizey * zoom then
-     viewofsy := -((winsizey - bmpdata.sizey * zoom) shr 1)
-    else if viewofsy > bmpdata.sizey * zoom - winsizey then
-     viewofsy := bmpdata.sizey * zoom - winsizey
-    else if viewofsy < 0 then
-     viewofsy := 0;
-    invalidaterect(window, NIL, TRUE);
-   end;
+   wm_Size: ResizeView(winpo, word(lapu), word(lapu shr 16));
 
    // Losing or gaining window focus
    wm_Activate:
@@ -1194,7 +1257,7 @@ begin
     end;
    end;
 
-   // Closing down
+   // Closing down...
    // Non-source views can be closed at any time; a source view may only be
    // closed if color compression is not ongoing.
    wm_Close:
@@ -1219,7 +1282,7 @@ begin
     colorpicking := FALSE;
     SendMessageA(mv_ButtonH[1], bm_setcheck, BST_UNCHECKED, 0);
     ShowWindow(mv_StaticH[7], SW_HIDE);
-    // If all views are closed, disable the From Image button
+    // If all views are closed, disable the From Image button.
     for winpo := 0 to high(viewdata) do
      if viewdata[winpo].buffyh <> 0 then exit;
     EnableWindow(mv_ButtonH[1], FALSE);
@@ -1255,14 +1318,15 @@ begin
   // 24-bit RGB rendering.
   if alpha = 3 then begin
    while pixelcount <> 0 do begin
-    dword(destp^) := dword(srcp^) or $FF000000; // always full alpha
+    // Always full alpha.
+    dword(destp^) := dword(srcp^) or $FF000000;
     inc(srcp, 3);
     inc(destp, 4);
     dec(pixelcount);
    end;
   end
   // 32-bit RGBA rendering, alpha rendering using RGBquad "acolor".
-  // Alpha is calculated in linear RGB space.
+  // Alpha mixing is most correctly done in linear RGB space.
   else begin
    while pixelcount <> 0 do begin
     dword(srccolor) := dword(srcp^);
@@ -1316,7 +1380,7 @@ begin
  end;
 
  if batchprocess = FALSE then begin
-  // Set up the new view window
+  // Set up the new view window.
   kind := viewclass;
   z := WS_TILEDWINDOW;
   viewdata[sr].winsizex := viewdata[sr].bmpdata.sizex;
@@ -2271,54 +2335,10 @@ begin
       if lastactiveview <> $FF then SaveViewAsPNG(lastactiveview);
 
       // Load config
-      92:
-      begin
-       kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
-       txt := chr(0); strutsi := homedir + chr(0);
-       fillbyte(openfilurec, sizeof(openfilurec), 0);
-       with openfilurec do begin
-        lStructSize := 76; // sizeof gives incorrect result?
-        hwndOwner := window;
-        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-        nFilterIndex := 1;
-        lpstrFile := @txt[1]; nMaxFile := 255;
-        lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
-        Flags := OFN_FILEMUSTEXIST or OFN_NOCHANGEDIR;
-       end;
-       if GetOpenFileNameA(@openfilurec) then begin
-        i := ReadIni(openfilurec.lpstrfile);
-        if i <> 0 then begin
-         txt := errortxt(i) + chr(0);
-         MessageBoxA(window, @txt[1], NIL, MB_OK);
-        end;
-       end;
-      end;
+      92: LoadConfig(window);
 
       // Save config
-      93:
-      begin
-       kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
-       txt := chr(0); strutsi := homedir + chr(0);
-       fillbyte(openfilurec, sizeof(openfilurec), 0);
-       with openfilurec do begin
-        lStructSize := 76; // sizeof gives incorrect result?
-        hwndOwner := window;
-        lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
-        nFilterIndex := 1;
-        lpstrFile := @txt[1]; nMaxFile := 255;
-        lpstrFileTitle := NIL; lpstrInitialDir := @strutsi[1]; lpstrTitle := NIL;
-        lpstrDefExt := @kind[31]; // "ini"
-        Flags := OFN_NOCHANGEDIR or OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST;
-       end;
-
-       if GetSaveFileNameA(@openfilurec) then begin
-        i := WriteIni(openfilurec.lpstrfile);
-        if i <> 0 then begin
-         txt := errortxt(i) + chr(0);
-         MessageBoxA(window, @txt[1], NIL, MB_OK);
-        end;
-       end;
-      end;
+      93: SaveConfig(window);
 
       // Copy image to clipboard
       94: if lastactiveview <> $FF then CopyView(lastactiveview);
