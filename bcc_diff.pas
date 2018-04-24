@@ -18,7 +18,7 @@ var diff : function(c1, c2 : RGBA64) : dword;
 // Function Diff(c1, c2 : RGBA64) : dword;
 // Returns absolute distance between two RGBA64 colors.
 
-{$define !newdiffrgb}
+{$define newdiffrgb}
 {$ifdef newdiffrgb}
 function diffRGB(c1, c2 : RGBA64) : dword;
 // Returns the squared difference between the two RGBA64 colors.
@@ -28,12 +28,16 @@ function diffRGB(c1, c2 : RGBA64) : dword;
 // The output will be within [0..$9EC0A]
 var b, g, r, a : dword;
 begin
- b := abs(mcg_RevGammaTab[c1.b] - mcg_RevGammaTab[c2.b]);
- g := abs(mcg_RevGammaTab[c1.g] - mcg_RevGammaTab[c2.g]);
- r := abs(mcg_RevGammaTab[c1.r] - mcg_RevGammaTab[c2.r]);
- a := abs(c1.a - c2.a);
-
- diffRGB := b * b * 2 + g * g * 4 + r * r * 3 + a * a;
+ b := abs(mcg_RevGammaTab[c1.b] * c1.a - mcg_RevGammaTab[c2.b] * c2.a);
+ g := abs(mcg_RevGammaTab[c1.g] * c1.a - mcg_RevGammaTab[c2.g] * c2.a);
+ r := abs(mcg_RevGammaTab[c1.r] * c1.a - mcg_RevGammaTab[c2.r] * c2.a);
+ a := abs(c1.a - c2.a) * 255;
+ diffRGB := b * 2 + g * 4 + r * 3 + a;
+ r := r shr 11;
+ g := g shr 11;
+ b := b shr 11;
+ a := a shr 11;
+ inc(diffRGB, b * b * 2 + g * g * 4 + r * r * 3 + a * a);
 end;
 {$else}
 function diffRGB(c1, c2 : RGBA64) : dword;
@@ -212,6 +216,7 @@ begin
  for i := 0 to 5 do begin
   pe[i].colog.r := 0; pe[i].colog.g := 0; pe[i].colog.b := 0; pe[i].colog.a := $FFFF;
  end;
+ pe[0].colog.a := 0;
  pe[1].colog.r := $FFFF; pe[2].colog.r := $FFFF; pe[4].colog.r := $8000;
  pe[1].colog.g := $FFFF; pe[4].colog.g := $8000; pe[5].colog.g := $FFFF;
  pe[1].colog.b := $FFFF; pe[3].colog.b := $FFFF; pe[4].colog.b := $8000;
@@ -224,7 +229,7 @@ begin
 
  // Tiny speed test.
  testcount := 8;
- numdiffs := 1 shl 24;
+ numdiffs := 1 shl 22;
  timespent := 0;
  for l := testcount - 1 downto 0 do begin
   i := GetTickCount;
