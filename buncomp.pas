@@ -24,7 +24,7 @@ program buncomp;
 
 // - Rendered/dithered viewdata should always be 32bpp for easier
 //   implementation, but with a flag indicating whether alpha data is real
-// - Alpha in diffRGB etc must be premultiplied, otherwise a preset palette
+// - Alpha in diffYCC too must be premultiplied, otherwise a preset palette
 //   item with a colored alpha may be ignored in favor of a solid black
 // - Diff result won't fit in 32bits without some loss of accuracy, since
 //   premultiplied alpha and squaring adds up; use qword or double?

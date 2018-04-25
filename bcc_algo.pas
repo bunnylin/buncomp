@@ -535,8 +535,8 @@ begin
   // Diffuselist is used to shuffle the processing order of pixels in each
   // row.
   setlength(diffuselist, viewdata[0].bmpdata.sizex);
-  for palusize := viewdata[0].bmpdata.sizex - 1 downto 0 do
-   diffuselist[palusize] := palusize;
+  for loopx := viewdata[0].bmpdata.sizex - 1 downto 0 do
+   diffuselist[loopx] := loopx;
   // Process the image, top-down, alternating L-to-R and R-to-L.
   for loopy := 0 to viewdata[0].bmpdata.sizey - 1 do begin
 
@@ -559,22 +559,22 @@ begin
     wptr := loopy * viewdata[0].bmpdata.sizex + diffuselist[loopx];
     if viewdata[0].alpha = 3 then begin
      // 24-bit
-     x := round(longint(palu[i]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
-     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
+     x := round(longint(palu[i + 0]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].b];
+     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
      x := round(longint(palu[i + 1]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].g];
      if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[i + 2]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].b];
-     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
-     tempcolor.a := $FF;
+     x := round(longint(palu[i + 2]) / 4) + mcg_GammaTab[RGBarray(viewdata[0].bmpdata.image^)[wptr].r];
+     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
+     tempcolor.a := $FFFF;
     end else begin
      // 32-bit
      tempcolor := mcg_GammaInput(RGBAarray(viewdata[0].bmpdata.image^)[wptr]);
-     x := round(longint(palu[i]) / 4) + tempcolor.r;
-     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
+     x := round(longint(palu[i + 0]) / 4) + tempcolor.b;
+     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
      x := round(longint(palu[i + 1]) / 4) + tempcolor.g;
      if x < 0 then tempcolor.g := 0 else if x > 65535 then tempcolor.g := 65535 else tempcolor.g := word(x);
-     x := round(longint(palu[i + 2]) / 4) + tempcolor.b;
-     if x < 0 then tempcolor.b := 0 else if x > 65535 then tempcolor.b := 65535 else tempcolor.b := word(x);
+     x := round(longint(palu[i + 2]) / 4) + tempcolor.r;
+     if x < 0 then tempcolor.r := 0 else if x > 65535 then tempcolor.r := 65535 else tempcolor.r := word(x);
      x := round(longint(palu[i + 3]) / 4) + tempcolor.a;
      if x < 0 then tempcolor.a := 0 else if x > 65535 then tempcolor.a := 65535 else tempcolor.a := word(x);
     end;
@@ -587,9 +587,9 @@ begin
     palptr := option.palsize;
     while palptr <> 0 do begin
      dec(palptr);
-     offenders[1].what := diff(tempcolor, pe[palptr].colog);
-     if offenders[1].what < offenders[0].what then begin
-      offenders[0].who := palptr; offenders[0].what := offenders[1].what;
+     i := diff(tempcolor, pe[palptr].colog);
+     if i < offenders[0].what then begin
+      offenders[0].who := palptr; offenders[0].what := i;
      end;
     end;
     palptr := offenders[0].who;
@@ -601,9 +601,9 @@ begin
     end else
      dword((rendimu.image + wptr * 4)^) := dword(pe[palptr].colo);
     // Calculate the per-channel error.
-    x := tempcolor.r - pe[palptr].colog.r;
+    x := tempcolor.b - pe[palptr].colog.b;
     y := tempcolor.g - pe[palptr].colog.g;
-    z := tempcolor.b - pe[palptr].colog.b;
+    z := tempcolor.r - pe[palptr].colog.r;
     alf := tempcolor.a - pe[palptr].colog.a;
     // Stuff the error into PALU to diffuse it.
     i := (diffusecount + diffuselist[loopx] * 4 + 4) and k; // -1x
