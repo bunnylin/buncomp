@@ -43,7 +43,8 @@ program buncomp;
 //   saves and copies to clipboard in 32-bit RGBA
 // - Could the program accept new source images by drag and drop?
 // - Switch to fpGUI to achieve cross-platform support
-// - Change YCbCr to YCH, perhaps better suited
+// - Change YCbCr to YCH, perhaps better suited; actually have both YCH-Luma,
+//   and YCH-Chroma, where the latter is weighed toward chroma preservation
 // - Try cielab again, the CIEDE2000 definition is the latest word on the
 //   subject. A color comparison implementation exists already for Excel.
 // - Revisit the flat color detector to dismiss any color areas that are not
@@ -94,8 +95,11 @@ const mv_ProgramName : string = 'BunComp' + chr(0);
       mainclass : string[9] = 'RDCMAINC' + chr(0);
       CSIDL_APPDATA = 26; // to use with winshell SHGetSpecialFolderLocation
 
-var mainsizex, mainsizey, magicx, magicy : word;
+var // Interface dimensions.
+    mainsizex, mainsizey, magicx, magicy : word;
     funsizex, funsizey, helpsizex, helpsizey : word;
+
+    // Data for loaded and generated images.
     lastactiveview : byte;
     viewdata : array[0..16] of record
       bmpdata : bitmaptype;
@@ -114,15 +118,16 @@ var mainsizex, mainsizey, magicx, magicy : word;
       weight : dword;
     end;
 
+    neutralcolor : RGBquad; // used to render N/A elements, system grey
     acolor : RGBquad; // the alpha-rendering color
     compressorthreadID : TThreadID; // color compression is done in a thread
     compressorthreadhandle : handle;
-    rendimu : bitmaptype; // the end result goes here; the new window with
-                          // this can only be spawned from the main thread...
+    // The end result goes here; the new window with this can only be spawned
+    // from the main thread...
+    rendimu : bitmaptype;
     tempbmp : bitmaptype;
 
     mv_ListBuffy, mv_FunBuffy : pointer;
-    neutralcolor : RGBquad; // used to render N/A elements, system grey
     mv_MainWinH, funwinhandle, HelpWinH : handle;
     funstatus, funpal, funbutton, helptxth : handle;
     mv_DC, mv_ListBuffyDC : hdc;
@@ -138,7 +143,6 @@ var mainsizex, mainsizey, magicx, magicy : word;
     mousescrollx, mousescrolly : integer;
     mousescrolling, colorpicking, compressing, batchprocess : boolean;
     mv_EndProgram, updatefun : boolean;
-    rr : rect;
     mv_Dlg : packed record // hacky thing for spawning dialog boxes
       headr : DLGTEMPLATE;
       data : array[0..31] of byte;
@@ -155,8 +159,9 @@ var mainsizex, mainsizey, magicx, magicy : word;
     {$endif}
 
 type pe_status = (PE_FREE, PE_ALLOCATED, PE_FIXED, PE_AUTOFLAT);
-    // Palette entries, both presets and algorithmically calculated go here.
-var pe : array of record
+
+var // Palette entries, both presets and algorithmically calculated go here.
+    pe : array of record
       colo : RGBquad;
       colog : RGBA64; // for the gamma-corrected values
       status : pe_status;
@@ -227,50 +232,35 @@ chr(13) + chr(10) + '.....  -(^_^)-  .....' + chr(13) + chr(10) + 'CC0, 2014-201
 'This program and its source code may be freely used, studied, copied, consumed, modified and distributed, by anyone, for any purpose.'
 );
 
-function hexifycolor(inco : RGBquad) : string;
+function hexifycolor(color : RGBquad) : UTF8string;
 // A macro for turning a color into a six-hex piece of text.
 begin
- hexifycolor[0] := chr(6);
- hexifycolor[1] := hextable[inco.r shr 4];
- hexifycolor[2] := hextable[inco.r and $F];
- hexifycolor[3] := hextable[inco.g shr 4];
- hexifycolor[4] := hextable[inco.g and $F];
- hexifycolor[5] := hextable[inco.b shr 4];
- hexifycolor[6] := hextable[inco.b and $F];
+ setlength(hexifycolor, 6);
+ hexifycolor[1] := hextable[color.r shr 4];
+ hexifycolor[2] := hextable[color.r and $F];
+ hexifycolor[3] := hextable[color.g shr 4];
+ hexifycolor[4] := hextable[color.g and $F];
+ hexifycolor[5] := hextable[color.b shr 4];
+ hexifycolor[6] := hextable[color.b and $F];
 end;
 
-function errortxt(ernum : byte) : string;
+function errortxt(ernum : byte) : UTF8string;
 begin
  case ernum of
-   // FPC errors
-   2: errortxt := 'File not found';
-   3: errortxt := 'Path not found';
-   5: errortxt := 'Access denied';
-   6: errortxt := 'File handle variable trashed, memory corrupted!!';
-   100: errortxt := 'Disk read error';
-   101: errortxt := 'Disk write error, disk full?';
-   103: errortxt := 'File not open';
-   200: errortxt := 'Div by zero!!';
-   201: errortxt := 'Range check error';
-   203: errortxt := 'Heap overflow - not enough memory, possibly corrupted resource size?';
-   204: errortxt := 'Invalid pointer operation';
-   215: errortxt := 'Arithmetic overflow';
-   216: errortxt := 'General protection fault';
    // BCC errors
-   99: errortxt := 'CreateWindow failed!';
-   98: errortxt := 'RegisterClass failed, while trying to create a window.';
-   84: errortxt := 'Could not fetch WinSystem directory!';
-   86: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA was not found in shell32.dll!';
-   87: errortxt := 'Could not write to own directory, and SHGetSpecialFolderPathA returned an error!';
+   99: errortxt := '99: CreateWindow failed!';
+   98: errortxt := '98: RegisterClass failed, while trying to create a window.';
+   84: errortxt := '84: Could not fetch WinSystem directory!';
+   86: errortxt := '86: Could not write to own directory, and SHGetSpecialFolderPathA was not found in shell32.dll!';
+   87: errortxt := '87: Could not write to own directory, and SHGetSpecialFolderPathA returned an error!';
 
-   else errortxt := 'Unlisted error';
+   else errortxt := mccommon.errortxt(ernum);
  end;
- errortxt := strdec(ernum) + ': ' + errortxt;
 end;
 
 procedure BunExit;
 // Procedure called automatically on program exit.
-var ert : string;
+var errtxt : UTF8string;
     i : dword;
 begin
  mv_EndProgram := TRUE; compressing := FALSE;
@@ -323,8 +313,8 @@ begin
 
  // Print out the error message if exiting unnaturally.
  if (erroraddr <> NIL) or (exitcode <> 0) then begin
-  ert := errortxt(exitcode) + chr(0);
-  MessageBoxA(0, @ert[1], NIL, MB_OK);
+  errtxt := errortxt(exitcode);
+  MessageBoxA(0, @errtxt[1], NIL, MB_OK);
  end;
 end;
 
@@ -354,14 +344,14 @@ begin
  end;
 end;
 
-procedure ClearPE(mini, maxi : word);
+procedure ClearPE(mini, maxi : dword);
 // Sets the preset palette entries between [mini..maxi] to unassigned, and
 // makes them a uniform plain color.
 var i : dword;
 begin
  if mini > maxi then begin i := mini; mini := maxi; maxi := i; end;
- if mini > high(pe) then mini := high(pe);
- if maxi > high(pe) then maxi := high(pe);
+ if mini >= dword(length(pe)) then mini := high(pe);
+ if maxi >= dword(length(pe)) then maxi := high(pe);
 
  for i := maxi downto mini do begin
   dword(pe[i].colo) := dword(neutralcolor);
@@ -369,7 +359,7 @@ begin
  end;
 end;
 
-function WriteIni(filunamu : string) : longint;
+function WriteIni(filunamu : UTF8string) : longint;
 // Stores the present settings in a file with the given filename.
 var conff : text;
     i : dword;
@@ -405,7 +395,7 @@ begin
  WriteIni := 0;
 end;
 
-function ReadIni(filunamu : string) : longint;
+function ReadIni(filunamu : UTF8string) : longint;
 // Tries to read the given ASCII text file, and loads configuration options
 // based on code strings. See the WriteIni function for the code definitions.
 var conff : text;
@@ -489,12 +479,15 @@ begin
 end;
 
 procedure SaveConfig(ownerWindow : hWnd);
-var kind, txt, strutsi : string;
+var kind, txt, strutsi : UTF8string;
     openfilurec : openfilename;
     i : dword;
 begin
  kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
- txt := chr(0); strutsi := homedir + chr(0);
+ setlength(txt, 256);
+ txt[1] := chr(0);
+ strutsi := homedir;
+ openfilurec.lStructSize := 0; // silence a compiler warning
  fillbyte(openfilurec, sizeof(openfilurec), 0);
  with openfilurec do begin
   lStructSize := 76; // sizeof gives incorrect result?
@@ -510,19 +503,22 @@ begin
  if GetSaveFileNameA(@openfilurec) then begin
   i := WriteIni(openfilurec.lpstrfile);
   if i <> 0 then begin
-   txt := errortxt(i) + chr(0);
+   txt := errortxt(i);
    MessageBoxA(ownerWindow, @txt[1], NIL, MB_OK);
   end;
  end;
 end;
 
 procedure LoadConfig(ownerWindow : hWnd);
-var kind, txt, strutsi : string;
+var kind, txt, strutsi : UTF8string;
     openfilurec : openfilename;
     i : dword;
 begin
  kind := 'Buncomp configuration files' + chr(0) + '*.ini' + chr(0) + chr(0);
- txt := chr(0); strutsi := homedir + chr(0);
+ setlength(txt, 256);
+ txt[1] := chr(0);
+ strutsi := homedir;
+ openfilurec.lStructSize := 0; // silence a compiler warning
  fillbyte(openfilurec, sizeof(openfilurec), 0);
  with openfilurec do begin
   lStructSize := 76; // sizeof gives incorrect result?
@@ -536,7 +532,7 @@ begin
  if GetOpenFileNameA(@openfilurec) then begin
   i := ReadIni(openfilurec.lpstrfile);
   if i <> 0 then begin
-   txt := errortxt(i) + chr(0);
+   txt := errortxt(i);
    MessageBoxA(ownerWindow, @txt[1], NIL, MB_OK);
   end;
  end;
@@ -544,6 +540,7 @@ end;
 
 // ------------------------------------------------------------------
 
+{$ifdef bonk}
 procedure outpal;
 // Debugging function, prints the palette state into an attached console.
 var lix : word;
@@ -560,20 +557,22 @@ begin
   if (lix and 7 = 7) or (lix + 1 = option.palsize) then writeln;
  end;
 end;
+{$endif}
 
 procedure ValidateHexaco;
 // The edit box should only accept hexadecimals; flush out everything else.
 // If the boxes are not empty, enable the apply button, otherwise disable.
 var mur : byte;
-    kind : string[7];
+    kind : UTF8string;
 begin
- byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
+ setlength(kind, SendMessageA(mv_EditH[1], WM_GETTEXTLENGTH, 0, 0) + 1);
+ SendMessageA(mv_EditH[1], WM_GETTEXT, length(kind), ptrint(@kind[1]));
  if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
  mur := length(kind);
  while mur <> 0 do begin
-  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
+  if kind[mur] in [chr(0),'0'..'9','A'..'F'] = FALSE then begin
    dec(mur);
-   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
+   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur);
    SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
    SendMessageA(mv_EditH[1], EM_SETSEL, mur, mur);
    EnableWindow(mv_ButtonH[2], FALSE);
@@ -582,6 +581,7 @@ begin
   dec(mur);
  end;
 
+ setlength(kind, 7);
  if SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
   EnableWindow(mv_ButtonH[2], TRUE);
 end;
@@ -590,15 +590,16 @@ procedure ValidateAlfaco;
 // The edit box should only accept hexadecimals; flush out everything else.
 // If the boxes are not empty, enable the apply button, otherwise disable.
 var mur : byte;
-    kind : string[7];
+    kind : UTF8string;
 begin
- byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 7, ptrint(@kind[1]));
+ setlength(kind, SendMessageA(mv_EditH[2], WM_GETTEXTLENGTH, 0, 0) + 1);
+ SendMessageA(mv_EditH[2], WM_GETTEXT, length(kind), ptrint(@kind[1]));
  if kind = '' then begin EnableWindow(mv_ButtonH[2], FALSE); exit; end;
  mur := length(kind);
  while mur > 0 do begin
-  if kind[mur] in ['0'..'9','A'..'F'] = FALSE then begin
+  if kind[mur] in [chr(0),'0'..'9','A'..'F'] = FALSE then begin
    dec(mur);
-   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur) + chr(0);
+   kind := copy(kind, 1, mur) + copy(kind, mur + 2, 5 - mur);
    SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
    SendMessageA(mv_EditH[2], EM_SETSEL, mur, mur);
    EnableWindow(mv_ButtonH[2], FALSE);
@@ -607,6 +608,7 @@ begin
   dec(mur);
  end;
 
+ setlength(kind, 8);
  if SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1])) <> 0 then
   EnableWindow(mv_ButtonH[2], TRUE);
 end;
@@ -684,7 +686,7 @@ procedure DrawFunBuffy;
 // Renders the fun palette block that the user sees during CompressColors.
 var funpoku : pointer;
     avar, q : dword;
-    rootsizex, rootsizey, x, y, pvar : word;
+    rootsizex, rootsizey, x, y, pvar : dword;
     aval : byte;
 begin
  if (mv_FunBuffy = NIL) or (funsizex = 0) or (funsizey = 0) or (option.palsize = 0)
@@ -732,12 +734,13 @@ procedure PackView(winpo : byte; bytealign : byte; whither : pbitmaptype);
 var srcofs, destofs : dword;
     packedpixel : longint;
     tempcolor : RGBquad;
-    xvar, yvar, dibwidth : word;
+    xvar, yvar, dibwidth : dword;
     bitptr : byte;
 begin
  if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
  mcg_ForgetImage(whither);
  if bytealign = 0 then inc(bytealign);
+ dword(tempcolor) := 0;
 
  // 256 or less colors, index 'em!
  if length(viewdata[winpo].bmpdata.palette) <= 256 then
@@ -843,6 +846,8 @@ begin
  if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
  kind := 'PNG image file' + chr(0) + '*.png' + chr(0) + chr(0);
  txt := chr(0);
+ newimu.image := NIL; // silence a compiler warning
+ openfilurec.lStructSize := 0; // silence a compiler warning
  fillbyte(openfilurec, sizeof(openfilurec), 0);
  with openfilurec do begin
   lStructSize := 76; // sizeof gives incorrect result?
@@ -897,14 +902,16 @@ procedure CopyView(winpo : byte);
 // Tries to place the image in viewdata[winpo] on the clipboard.
 var workhand : hglobal;
     tonne : pointer;
-    txt : string;
+    txt : UTF8string;
     hedari : bitmapv4header;
     newimu : bitmaptype;
     ofsu, ofx : dword;
 begin
  if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
+ newimu.image := NIL; // silence a compiler warning
  fillbyte(newimu, sizeof(newimu), 0);
  PackView(winpo, 4, @newimu);
+ hedari.bv4Size := 0; // silence a compiler warning
  fillbyte(hedari, sizeof(hedari), 0);
  with hedari do begin // not all programs know what v4DIBs are
   bv4Size := sizeof(bitmapinfoheader); // so use lowest common denominator
@@ -920,14 +927,14 @@ begin
  end;
 
  if OpenClipboard(viewdata[winpo].winhandu) = FALSE then begin
-  txt := 'Could not open clipboard.' + chr(0);
+  txt := 'Could not open clipboard.';
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
  end else begin
   EmptyClipboard;
   // Allocate a system-wide memory chunk.
   workhand := GlobalAlloc(GMEM_MOVEABLE, hedari.bv4Size + hedari.bv4ClrUsed * 4 + newimu.sizex * newimu.sizey);
   if workhand = 0 then begin
-   txt := 'Could not allocate global memory.' + chr(0);
+   txt := 'Could not allocate global memory.';
    MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
   end else begin
    // Stuff the memory chunk with goodies!
@@ -968,7 +975,7 @@ begin
    tonne := NIL;
    GlobalUnlock(workhand);
    if SetClipBoardData(CF_DIB, workhand) = 0 then begin
-    txt := 'Could not place data on the clipboard.' + chr(0);
+    txt := 'Could not place data on the clipboard.';
     MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK);
     GlobalFree(workhand);
    end;
@@ -979,20 +986,20 @@ begin
  mcg_ForgetImage(@newimu);
 end;
 
-procedure ImportPalette(winpo : byte);
+procedure ImportPalette(winpo : dword);
 // Grabs the palette from viewdata[winpo] and uses it to reset the preset
 // palette entries.
-var txt : string;
+var txt : UTF8string;
     mur : dword;
 begin
  // Safety checks.
- if (winpo > high(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
- if high(viewdata[winpo].bmpdata.palette) > high(pe) then begin
-  txt := 'Cannot import: this image has more colors than the maximum palette size (' + strdec(length(pe)) + ').' + chr(0);
+ if (winpo >= length(viewdata)) or (viewdata[winpo].bmpdata.image = NIL) then exit;
+ if length(viewdata[winpo].bmpdata.palette) > length(pe) then begin
+  txt := 'Cannot import: this image has more colors than the maximum palette size (' + strdec(length(pe)) + ').';
   MessageBoxA(viewdata[winpo].winhandu, @txt[1], NIL, MB_OK); exit;
  end;
  // Clear the previous palette.
- if high(viewdata[winpo].bmpdata.palette) < high(pe) then
+ if length(viewdata[winpo].bmpdata.palette) < length(pe) then
   ClearPE(length(viewdata[winpo].bmpdata.palette), high(pe));
  // Copy the view's histogram to a new active palette.
  for mur := high(viewdata[winpo].bmpdata.palette) downto 0 do begin
@@ -1007,7 +1014,7 @@ begin
  ShowWindow(mv_StaticH[7], SW_HIDE);
 end;
 
-procedure ResizeView(viewnum : dword; newx, newy : word);
+procedure ResizeView(viewnum, newx, newy : dword);
 begin
  if (viewnum >= length(viewdata))
  or (viewdata[viewnum].bmpdata.image = NIL) then exit;
@@ -1032,7 +1039,7 @@ begin
  end;
 end;
 
-procedure ZoomIn(winh : handle; viewnum : byte);
+procedure ZoomIn(winh : handle; viewnum : dword);
 begin
  with viewdata[viewnum] do if zoom < 8 then begin
   // Make sure the image does not scroll while zooming.
@@ -1051,7 +1058,7 @@ begin
  end;
 end;
 
-procedure ZoomOut(winh : handle; viewnum : byte);
+procedure ZoomOut(winh : handle; viewnum : dword);
 begin
  with viewdata[viewnum] do if zoom > 1 then begin
   // Make sure the image does not scroll while zooming.
@@ -1077,18 +1084,18 @@ function ViewProc (window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : l
 var mv_PS : paintstruct;
     rrs, rrd : rect;
     pico : RGBquad;
-    kind : string[32];
-    winpo : byte;
+    kind : UTF8string;
+    winpo : dword;
 begin
  ViewProc := 0;
  // Specify the view window this message is intended for
  winpo := GetWindowLong(window, GWL_USERDATA);
 
  case amex of
-   // the Compress-button
+   // The Compress-button.
    wm_Create: if winpo = 0 then EnableWindow(mv_ButtonH[4], TRUE);
 
-   // Copy stuff to screen from our own buffer
+   // Copy stuff to screen from our own buffer.
    wm_Paint:
    begin
     mv_DC := beginPaint (window, @mv_PS);
@@ -1124,10 +1131,10 @@ begin
     endPaint (window, mv_PS);
    end;
 
-   // Resizing
+   // Resizing.
    wm_Size: ResizeView(winpo, word(lapu), word(lapu shr 16));
 
-   // Losing or gaining window focus
+   // Losing or gaining window focus.
    wm_Activate:
    begin
     if wepu and $FFFF = WA_INACTIVE then begin
@@ -1137,14 +1144,14 @@ begin
      end;
     end else
      lastactiveview := winpo;
-    // do the default action too, why not
+    // Do the default action too, why not.
     ViewProc := DefWindowProc(Window, AMex, wepu, lapu);
    end;
 
-   // Mouse stuff
+   // Mouse stuff.
    wm_MouseMove:
    if mousescrolling = FALSE then begin
-    // If color picking is toggled, refresh the color selection
+    // If color picking is toggled, refresh the color selection.
     if colorpicking then with viewdata[winpo] do begin
      rrs.left := (viewofsx + integer(lapu and $FFFF)) div zoom;
      rrs.top := (viewofsy + integer(lapu shr 16)) div zoom;
@@ -1154,11 +1161,11 @@ begin
       pico := fetchpixel(winpo, rrs.left, rrs.top);
       kind := hexifycolor(pico) + chr(0);
       SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-      kind := hextable[pico.a shr 4] + hextable[pico.a and $F] + chr(0);
+      kind := hextable[pico.a shr 4] + hextable[pico.a and $F];
       SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
       EnableWindow(mv_ButtonH[3], TRUE);
       InvalidateRect(mv_ColorBlockH, NIL, TRUE);
-      // check for palette hits
+      // Check for palette hits.
       wepu := 0;
       for lapu := 0 to high(pe) do
        if dword(pe[lapu].colo) = dword(pico) then inc(wepu);
@@ -1166,7 +1173,7 @@ begin
        else ShowWindow(mv_StaticH[7], SW_SHOW);
      end;
     end
-    // If left button pressed, start mousescrolling
+    // If left button pressed, start mousescrolling.
     else if wepu and MK_LBUTTON <> 0 then begin
      SetCapture(window);
      mousescrolling := TRUE;
@@ -1175,18 +1182,18 @@ begin
     end;
    end
 
-   // Mouse scrolling
+   // Mouse scrolling.
    else with viewdata[winpo] do begin
     rrd.left := mousescrollx - integer(lapu and $FFFF);
     rrd.top := mousescrolly - integer(lapu shr 16);
     mousescrollx := integer(lapu and $FFFF);
     mousescrolly := integer(lapu shr 16);
 
-    // images smaller than winsize can't be scrolled
+    // Images smaller than winsize can't be scrolled.
     if bmpdata.sizex * zoom <= winsizex then rrd.left := 0;
     if bmpdata.sizey * zoom <= winsizey then rrd.top := 0;
     if (rrd.left or rrd.top) <> 0 then begin
-     // can't scroll view beyond edges
+     // Can't scroll view beyond edges.
      if viewofsx + rrd.left <= 0 then
       rrd.left := -viewofsx
      else if dword(viewofsx + rrd.left + winsizex) >= bmpdata.sizex * zoom then
@@ -1219,13 +1226,13 @@ begin
    if integer(wepu shr 16) < 0 then ZoomOut(window, winpo)
    else ZoomIn(window, winpo);
 
-   // Right-click menu popup
+   // Right-click menu popup.
    wm_ContextMenu:
    begin
     if mousescrolling then begin
      ReleaseCapture; mousescrolling := FALSE;
     end;
-    kind := 'Import palette ' + chr(8) + '(CTRL+M)' + chr(0);
+    kind := 'Import palette ' + chr(8) + '(CTRL+M)';
     // If the view image has more distinct colors than the maximum palette
     // palette size, disable palette importing.
     wepu := MF_BYPOSITION;
@@ -1242,7 +1249,7 @@ begin
      96: ImportPalette(winpo);
    end;
 
-   // Keypresses
+   // Keypresses.
    wm_Char:
    begin
     case wepu of
@@ -1295,7 +1302,7 @@ end;
 
 {$include bcc_eval.pas}
 
-procedure RedrawView(sr : byte);
+procedure RedrawView(sr : dword);
 // Renders the raw bitmap into a buffer that the system can display.
 var srcp, destp : pointer;
     acolorg : RGBA64;
@@ -1303,7 +1310,7 @@ var srcp, destp : pointer;
     pixelcount : dword;
     a_inverse : byte;
 begin
- if (sr > high(viewdata)) or (viewdata[sr].bmpdata.image = NIL) then exit;
+ if (sr >= length(viewdata)) or (viewdata[sr].bmpdata.image = NIL) then exit;
 
  acolorg := mcg_GammaInput(acolor);
 
@@ -1350,7 +1357,7 @@ begin
  end;
 end;
 
-procedure SpawnView(sr : byte; imu : pbitmaptype);
+procedure SpawnView(sr : dword; imu : pbitmaptype);
 // Creates a window with a bitmap for viewdata[sr]. SR is 0 for the source
 // image, and non-zero for a processed result image.
 // viewdata[sr] can be uninitialised.
@@ -1359,10 +1366,11 @@ procedure SpawnView(sr : byte; imu : pbitmaptype);
 // viewdata[sr].bmpdata.sizexy will be the bitmap's real pixel dimensions.
 // The bitmaptype record imu^ will be copied to viewdata[sr].bmpdata, and the
 // original will be wiped out.
-var kind : string;
+var kind : UTF8string;
+    rr : rect;
     z : dword;
 begin
- if sr > high(viewdata) then sr := high(viewdata);
+ if sr >= length(viewdata) then sr := high(viewdata);
  if viewdata[sr].winhandu <> 0 then DestroyWindow(viewdata[sr].winhandu);
 
  // 24-bit RGB or 32-bit RGBA : accept no imitations
@@ -1433,16 +1441,15 @@ end;
 
 function HelpProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // A window for displaying helpful text.
-var z : dword;
-    i : byte;
-    kind : string[9];
+var i, z : dword;
+    kind : UTF8string;
     bulkhelp : pointer;
 begin
  HelpProc := 0;
  case amex of
    wm_Create:
    begin
-    kind := 'EDIT' + chr(0);
+    kind := 'EDIT';
     z := WS_CHILD or WS_VISIBLE or WS_VSCROLL or ES_WANTRETURN
       or ES_MULTILINE or ES_READONLY;
     HelpTxtH := CreateWindowEx(WS_EX_CLIENTEDGE, @kind[1], NIL, z,
@@ -1496,9 +1503,10 @@ end;
 
 function AlfaSelectorProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // A mini-dialog box for entering the color that alpha is rendered with.
-var flaguz : dword;
-    kind : string[9];
-    txt : string;
+var rr : rect;
+    i, flaguz : dword;
+    kind : UTF8string;
+    txt : UTF8string;
     handuli : hwnd;
 begin
  AlfaSelectorProc := 0;
@@ -1511,8 +1519,8 @@ begin
     AdjustWindowRect(rr, WS_CAPTION or DS_CENTER or DS_MODALFRAME, FALSE);
     SetWindowPos(window, HWND_TOP, 0, 0, rr.right - rr.left, rr.bottom - rr.top, flaguz);
 
-    kind := 'STATIC' + chr(0);
-    txt := 'Please enter the hexadecimal color to render the alpha channel with' + chr(13) + '(example: FF00FF would be pinkish violet)' + chr(0);
+    kind := 'STATIC';
+    txt := 'Please enter the hexadecimal color to render the alpha channel with' + chr(13) + '(example: FF00FF would be pinkish violet)';
     flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
     rr.left := 0; rr.right := 384;
     rr.top := 24; rr.bottom := 32;
@@ -1521,8 +1529,8 @@ begin
       window, 180, system.maininstance, NIL);
     SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[2]), -1);
 
-    kind := 'EDIT' + chr(0);
-    txt := hexifycolor(acolor) + chr(0);
+    kind := 'EDIT';
+    txt := hexifycolor(acolor);
     flaguz := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or WS_TABSTOP;
     rr.left := 96; rr.right := 192;
     rr.top := 64; rr.bottom := 24;
@@ -1532,8 +1540,8 @@ begin
     SendMessageA(handuli, WM_SETFONT, longint(mv_FontH[1]), -1);
     SendMessageA(handuli, EM_SETLIMITTEXT, 6, 0);
 
-    kind := 'BUTTON' + chr(0);
-    txt := 'OK' + chr(0);
+    kind := 'BUTTON';
+    txt := 'OK';
     flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_DEFPUSHBUTTON or WS_TABSTOP;
     rr.left := 160; rr.right := 56;
     rr.top := 96; rr.bottom := 24;
@@ -1548,32 +1556,33 @@ begin
 
    wm_Command:
    if word(wepu) = 182 then begin
+    // OK button.
     SendMessageA(window, wm_Close, 0, 0);
     AlfaSelectorProc := 1;
    end
    else if word(wepu) = 181 then begin
+    // Edit field.
     if wepu shr 16 = EN_UPDATE then begin
-     txt[0] := chr(0);
-     byte(kind[0]) := SendMessageA(lapu, WM_GETTEXT, 9, ptrint(@kind[1]));
-     flaguz := length(kind);
-     while flaguz <> 0 do begin
-      if (kind[flaguz] in ['0'..'9','A'..'F'] = FALSE) then begin
-       kind := copy(kind, 1, flaguz - 1) + copy(kind, flaguz + 1, length(kind) - flaguz);
-       txt[0] := chr(flaguz);
+     flaguz := 0;
+     i := SendMessageA(lapu, WM_GETTEXTLENGTH, 0, 0);
+     setlength(kind, i + 1);
+     SendMessageA(lapu, WM_GETTEXT, i + 1, ptrint(@kind[1]));
+     while i <> 0 do begin
+      if (kind[i] in ['0'..'9','A'..'F'] = FALSE) then begin
+       kind := copy(kind, 1, i - 1) + copy(kind, i + 1, length(kind) - i);
+       flaguz := i;
       end;
-      dec(flaguz);
+      dec(i);
      end;
-     kind := kind + chr(0);
-     flaguz := 0; flaguz := byte(txt[0]);
      if flaguz <> 0 then begin
       dec(flaguz);
       SendMessageA(lapu, WM_SETTEXT, length(kind), ptrint(@kind[1]));
       SendMessageA(lapu, EM_SETSEL, flaguz, flaguz);
      end;
-     flaguz := valhex(kind);
-     acolor.b := byte(flaguz);
-     acolor.g := byte(flaguz shr 8);
-     acolor.r := byte(flaguz shr 16);
+     i := valhex(kind);
+     acolor.b := byte(i);
+     acolor.g := byte(i shr 8);
+     acolor.r := byte(i shr 16);
     end;
    end;
 
@@ -1587,9 +1596,9 @@ begin
 end;
 
 function FunProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
-var flaguz : dword;
-    kind : string[9];
-    txt : string;
+var rr : rect;
+    flaguz : dword;
+    kind, txt : UTF8string;
 begin
  FunProc := 0;
  case amex of
@@ -1603,8 +1612,8 @@ begin
     // fun window: (8 + funsizex + 8) x (8 + funsizey + 76)
     funsizex := funsizex and $FFFC; // confirm DWORD-alignment
     funwinhandle := window;
-    kind := 'STATIC' + chr(0);
-    txt := 'Initialising...' + chr(0);
+    kind := 'STATIC';
+    txt := 'Initialising...';
     flaguz := WS_CHILD or WS_VISIBLE or SS_CENTER;
     rr.left := 0; rr.right := funsizex + 16;
     rr.top := funsizey + 16; rr.bottom := 24;
@@ -1613,8 +1622,8 @@ begin
       window, 71, system.maininstance, NIL);
     SendMessageA(funstatus, WM_SETFONT, longint(mv_FontH[2]), -1);
 
-    kind := 'BUTTON' + chr(0);
-    txt := 'Never mind' + chr(0);
+    kind := 'BUTTON';
+    txt := 'Never mind';
     flaguz := WS_CHILD or WS_VISIBLE or BS_CENTER or BS_PUSHLIKE;
     rr.left := (funsizex shr 1) - 56; rr.right := 128;
     rr.top := funsizey + 48; rr.bottom := 24;
@@ -1623,7 +1632,7 @@ begin
       window, 72, system.maininstance, NIL);
     SendMessageA(funbutton, WM_SETFONT, longint(mv_FontH[1]), -1);
 
-    kind := 'STATIC' + chr(0); txt := chr(0);
+    kind := 'STATIC';
     flaguz := SS_BITMAP or WS_CHILD or WS_VISIBLE;
     rr.left := 8; rr.right := funsizex;
     rr.top := 8; rr.bottom := funsizey;
@@ -1678,7 +1687,7 @@ end;
 function MagicProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // Handles win32 messages for the magic color list.
 var mv_PS : paintstruct;
-    kind : string[16];
+    kind : UTF8string;
 begin
  case amex of
    // Copy stuff to screen from our own buffer
@@ -1701,20 +1710,20 @@ begin
    wm_LButtonDown:
    begin
     pe_used := (lapu shr 16) div (160 shr 3) + GetScrollPos(mv_SliderH[1], SB_CTL);
-    kind := 'Selected: ' + strdec(pe_used) + chr(0);
+    kind := 'Selected: ' + strdec(pe_used);
     SendMessageA(mv_StaticH[6], WM_SETTEXT, 0, ptrint(@kind[1]));
     DrawMagicList;
     if pe[pe_used].status = PE_FREE then begin
      kind := chr(0);
      SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-     kind := 'FF' + chr(0);
+     kind := 'FF';
      SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
      EnableWindow(mv_ButtonH[3], FALSE);
     end
     else begin
-     kind := hexifycolor(pe[pe_used].colo) + chr(0);
+     kind := hexifycolor(pe[pe_used].colo);
      SendMessageA(mv_EditH[1], WM_SETTEXT, 0, ptrint(@kind[1]));
-     kind := hextable[pe[pe_used].colo.a shr 4] + hextable[pe[pe_used].colo.a and $F] + chr(0);
+     kind := hextable[pe[pe_used].colo.a shr 4] + hextable[pe[pe_used].colo.a and $F];
      SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@kind[1]));
      EnableWindow(mv_ButtonH[3], TRUE);
     end;
@@ -1731,7 +1740,8 @@ end;
 
 function mv_MainProc(window : hwnd; amex : uint; wepu : wparam; lapu : lparam) : lresult; stdcall;
 // Message handler for the main work window that has everything on it.
-var kind, strutsi, txt : string;
+var rr : rect;
+    kind, strutsi, txt : UTF8string;
     slideinfo : scrollinfo;
     openfilurec : openfilename;
     cliphand : handle;
@@ -1740,22 +1750,23 @@ var kind, strutsi, txt : string;
     f : file;
 begin
  mv_MainProc := 0;
+ openfilurec.lStructSize := 0; // silence a compiler warning
  case amex of
-   // Initialization
+   // Initialization.
    wm_Create:
    begin
-    kind := 'Arial' + chr(0); // bold font
+    kind := 'Arial'; // bold font
     mv_FontH[1] := CreateFont(16, 0, 0, 0, 600, 0, 0, 0,
       ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
 
-    kind := 'Arial' + chr(0); // smaller normal font
+    kind := 'Arial'; // smaller normal font
     mv_FontH[2] := CreateFont(14, 0, 0, 0, 0, 0, 0, 0, ANSI_CHARSET,
       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       DEFAULT_QUALITY, DEFAULT_PITCH or FF_DONTCARE, @kind[1]);
 
     // Create static interface strings...
-    kind := 'STATIC' + chr(0);
+    kind := 'STATIC';
     z := WS_CHILD or WS_VISIBLE or SS_ETCHEDHORZ;
     rr.left := 0; rr.right := mainsizex + 8;
     rr.top := 0; rr.bottom := 1;
@@ -1766,34 +1777,34 @@ begin
     z := WS_CHILD or WS_VISIBLE or SS_LEFT;
     rr.left := 8; rr.right := mainsizex - 8;
     rr.top := 8; rr.bottom := 16;
-    txt := 'Preset palette' + chr(0);
+    txt := 'Preset palette';
     mv_StaticH[2]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 52, system.maininstance, NIL);
 
     rr.left := 8; rr.right := mainsizex - 8;
     rr.top := mainsizey - 132; rr.bottom := 16;
-    txt := 'Output palette size: 256 colors' + chr(0);
+    txt := 'Output palette size: 256 colors';
     mv_StaticH[3]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 53, system.maininstance, NIL);
 
     rr.left := 8; rr.right := (mainsizex shr 1) - 8;
     rr.top := mainsizey - 80; rr.bottom := 16;
-    txt := 'Colorspace:' + chr(0);
+    txt := 'Colorspace:';
     mv_StaticH[4]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 54, system.maininstance, NIL);
 
     rr.left := mainsizex shr 1; rr.right := (mainsizex shr 1) - 8;
-    txt := 'Dithering:' + chr(0);
+    txt := 'Dithering:';
     mv_StaticH[5]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 55, system.maininstance, NIL);
 
     rr.top := 42; rr.bottom := 20;
     rr.left := mainsizex shr 1; rr.right := (mainsizex shr 2) - 8;
-    txt := 'Selected: 0' + chr(0);
+    txt := 'Selected: 0';
     mv_StaticH[6]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 56, system.maininstance, NIL);
@@ -1803,7 +1814,7 @@ begin
     rr.top := 10;
     rr.left := (mainsizex shr 2) * 3;
     rr.right := (mainsizex shr 2) - 8;
-    txt := 'Already set' + chr(0);
+    txt := 'Already set';
     mv_StaticH[7]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 57, system.maininstance, NIL);
@@ -1853,7 +1864,7 @@ begin
     DrawMagicList;
 
     // Create controls.
-    kind := 'SCROLLBAR' + chr(0);
+    kind := 'SCROLLBAR';
     z := WS_CHILD or WS_VISIBLE or SBS_VERT;
     rr.left := mainsizex shr 1 - 24; rr.right := 16;
     rr.top := 29; rr.bottom := magicy + 2;
@@ -1861,7 +1872,7 @@ begin
       rr.left, rr.top, rr.right, rr.bottom,
       window, 41, system.maininstance, NIL);
 
-    kind := 'EDIT' + chr(0);
+    kind := 'EDIT';
     z := WS_CHILD or WS_VISIBLE or ES_UPPERCASE or ES_AUTOHSCROLL;
     rr.left := (mainsizex shr 1) - 2;
     rr.right := (mainsizex shr 2) - 8 + 4;
@@ -1875,9 +1886,9 @@ begin
       rr.left, rr.top, rr.right, rr.bottom,
       window, 39, system.maininstance, NIL);
 
-    kind := 'BUTTON' + chr(0);
+    kind := 'BUTTON';
     z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX or BS_PUSHLIKE;
-    txt := 'From image' + chr(0);
+    txt := 'From image';
     rr.right := (mainsizex shr 2) - 8;
     rr.top := 30; rr.bottom := 24;
     mv_ButtonH[1]:= CreateWindow(@kind[1], @txt[1], z,
@@ -1885,7 +1896,7 @@ begin
       window, 61, system.maininstance, NIL);
 
     z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_PUSHBUTTON;
-    txt := 'Apply' + chr(0);
+    txt := 'Apply';
     rr.left := (mainsizex shr 1);
     rr.right := mainsizex shr 2 - 8;
     rr.top := 96;
@@ -1893,20 +1904,20 @@ begin
       rr.left, rr.top, rr.right, rr.bottom,
       window, 62, system.maininstance, NIL);
 
-    txt := 'Delete' + chr(0);
+    txt := 'Delete';
     rr.left := mainsizex - rr.right - 8;
     mv_ButtonH[3]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 63, system.maininstance, NIL);
 
-    txt := 'Compress!' + chr(0);
+    txt := 'Compress!';
     rr.left := mainsizex shr 1; rr.right := rr.left - 8;
     rr.top := 23 + magicy - rr.bottom;
     mv_ButtonH[4]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 64, system.maininstance, NIL);
 
-    kind := 'SCROLLBAR' + chr(0);
+    kind := 'SCROLLBAR';
     z := WS_CHILD or WS_VISIBLE or SBS_HORZ;
     rr.left := 8; rr.right := mainsizex - 16;
     rr.top := mainsizey - 110; rr.bottom := 16;
@@ -1914,22 +1925,22 @@ begin
       rr.left, rr.top, rr.right, rr.bottom,
       window, 42, system.maininstance, NIL);
 
-    kind := 'BUTTON' + chr(0);
+    kind := 'BUTTON';
     z := WS_CHILD or WS_VISIBLE or BS_TEXT or BS_AUTOCHECKBOX;
-    txt := 'Favor flat colors' + chr(0);
+    txt := 'Favor flat colors';
     rr.left := mainsizex shr 1; rr.right := mainsizex - rr.left - 8;
     rr.top := mainsizey - 24; rr.bottom := 16;
     mv_ButtonH[5]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 65, system.maininstance, NIL);
 
-    txt := 'Preserve contrast' + chr(0);
+    txt := 'Preserve contrast';
     rr.left := 8; rr.right := mainsizex shr 1 - 8;
     mv_ButtonH[6]:= CreateWindow(@kind[1], @txt[1], z,
       rr.left, rr.top, rr.right, rr.bottom,
       window, 66, system.maininstance, NIL);
 
-    kind := 'COMBOBOX' + chr(0);
+    kind := 'COMBOBOX';
     z := WS_CHILD or WS_VISIBLE or CBS_DROPDOWNLIST;
     rr.left := 8; rr.right := (mainsizex shr 1) - 16;
     rr.top := mainsizey - 60; rr.bottom := 256;
@@ -1954,7 +1965,7 @@ begin
     slideinfo.nMin := 2;
     slideinfo.nPos := 256;
     slideinfo.nPage := 16;
-    slideinfo.nMax := slideinfo.nPos + slideinfo.nPage - 1;
+    slideinfo.nMax := slideinfo.nPos + longint(slideinfo.nPage) - 1;
     SetScrollInfo(mv_SliderH[2], SB_CTL, @slideinfo, TRUE);
 
     for i := 2 to 5 do SendMessageA(mv_StaticH[i], WM_SETFONT, longint(mv_FontH[1]), 1);
@@ -1968,7 +1979,7 @@ begin
     SendMessageA(mv_EditH[1], WM_SETFONT, longint(mv_FontH[1]), 0);
     SendMessageA(mv_EditH[2], EM_SETLIMITTEXT, 2, 0);
     SendMessageA(mv_EditH[2], WM_SETFONT, longint(mv_FontH[1]), 0);
-    txt := 'FF' + chr(0);
+    txt := 'FF';
     SendMessageA(mv_EditH[2], WM_SETTEXT, 0, ptrint(@txt[1]));
     for i := 2 to 3 do SendMessageA(mv_ListH[i], WM_SETFONT, longint(mv_FontH[2]), 0);
     for i := 0 to high(dithername) do begin
@@ -1995,7 +2006,7 @@ begin
        InvalidateRect(mv_ColorBlockH, NIL, TRUE);
       end;
 
-      // GUI button: Pick a color from the image
+      // GUI button: Pick a color from the image.
       61:
       begin
        if SendMessageA(mv_ButtonH[1], bm_getcheck, 0, 0) = BST_CHECKED
@@ -2003,16 +2014,18 @@ begin
        ShowWindow(mv_StaticH[7], SW_HIDE);
       end;
 
-      // GUI button: Apply
+      // GUI button: Apply.
       62:
       begin
        pe[pe_used].status := PE_FIXED;
-       byte(kind[0]) := SendMessageA(mv_EditH[1], WM_GETTEXT, 7, ptrint(@kind[1]));
+       setlength(kind, SendMessageA(mv_EditH[1], WM_GETTEXTLENGTH, 0, 0) + 1);
+       SendMessageA(mv_EditH[1], WM_GETTEXT, length(kind), ptrint(@kind[1]));
        i := valhex(kind);
        pe[pe_used].colo.r := byte(i shr 16);
        pe[pe_used].colo.g := byte(i shr 8);
        pe[pe_used].colo.b := byte(i);
-       byte(kind[0]) := SendMessageA(mv_EditH[2], WM_GETTEXT, 3, ptrint(@kind[1]));
+       setlength(kind, SendMessageA(mv_EditH[2], WM_GETTEXTLENGTH, 0, 0) + 1);
+       SendMessageA(mv_EditH[2], WM_GETTEXT, length(kind), ptrint(@kind[1]));
        i := valhex(kind);
        pe[pe_used].colo.a := i;
        DrawMagicList;
@@ -2022,7 +2035,7 @@ begin
        ShowWindow(mv_StaticH[7], SW_HIDE);
       end;
 
-      // GUI button: Delete
+      // GUI button: Delete.
       63:
       begin
        ClearPE(pe_used, pe_used);
@@ -2072,25 +2085,25 @@ begin
         SpawnView(i, @rendimu);
         txt := 'Result - ' + strdec(length(viewdata[i].bmpdata.palette)) + ' colors';
         if viewdata[i].alpha = 4 then txt := txt + ' with alpha';
-        txt := txt + ', ' + colorspacename[option.colorspace] + ', ' + dithername[option.dithering] + chr(0);
+        txt := txt + ', ' + colorspacename[option.colorspace] + ', ' + dithername[option.dithering];
         SendMessageA(viewdata[i].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
        end;
        compressorthreadID := 0;
       end;
 
-      // Command: Scrap the source image's alpha channel
+      // Command: Scrap the source image's alpha channel.
       88:
       if viewdata[0].winhandu = 0 then begin
-       txt := 'There is no source image.' + chr(0);
+       txt := 'There is no source image.';
        MessageBoxA(window, @txt[1], NIL, MB_OK);
       end
       else begin
        if viewdata[0].alpha <> 4 then begin
-        txt := 'Source has no alpha.' + chr(0);
+        txt := 'Source has no alpha.';
         MessageBoxA(window, @txt[1], NIL, MB_OK);
        end
        else begin
-        // build a new 24-bit image from previous 32-bit
+        // Build a new 24-bit image from previous 32-bit.
         z := viewdata[0].bmpdata.sizex * viewdata[0].bmpdata.sizey;
         getmem(objp, z * 3);
         while z <> 0 do begin
@@ -2102,22 +2115,23 @@ begin
         freemem(viewdata[0].bmpdata.image);
         viewdata[0].bmpdata.image := objp;
         objp := NIL;
-        // refresh all secondary image data
+        // Refresh all secondary image data.
         viewdata[0].alpha := 3;
         setlength(viewdata[0].bmpdata.palette, 0);
         MakeHistogram(0);
         DetectFlats;
         RedrawView(0);
-        // adjust the view's name
-        byte(txt[0]) := GetWindowText(viewdata[0].winhandu, @txt[1], 255);
-        z := length(txt);
+        // Adjust the view's name.
+        z := GetWindowTextLength(viewdata[0].winhandu);
+        setlength(txt, z);
+        GetWindowText(viewdata[0].winhandu, @txt[1], z);
         while (z <> 0) and (txt[z] <> '-') do dec(z);
-        txt := copy(txt, 1, z) + ' ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors' + chr(0);
+        txt := copy(txt, 1, z) + ' ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
         SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
        end;
       end;
 
-      // File: Batch process images
+      // File: Batch process images.
       89:
       begin
        colorpicking := FALSE;
@@ -2154,15 +2168,15 @@ begin
          inc(openfilurec.nmaxfile);
         end else
          txt := 'The ' + strdec(openfilurec.nmaxfile) + ' files';
-        txt := txt + ' you selected will be color-reduced and overwritten using the current settings.' + chr(0);
-        kind := 'Batch processing' + chr(0);
+        txt := txt + ' you selected will be color-reduced and overwritten using the current settings.';
+        kind := 'Batch processing';
 
         if MessageBoxA(window, @txt[1], @kind[1], MB_OKCANCEL) = IDOK then begin
          // Grab the files' directory.
          z := 0;
          while byte((filulist + z)^) <> 0 do inc(z);
+         setlength(kind, z);
          move(filulist^, kind[1], z);
-         byte(kind[0]) := z;
          inc(z);
 
          // If there was just one file, the filename and directory are
@@ -2180,13 +2194,13 @@ begin
           end;
           inc(z);
 
-          // open the image
+          // Open the image.
           strutsi := kind + txt;
           assign(f, strutsi);
           filemode := 0; reset(f, 1); // read-only
           i := IOresult; // problem opening the file?
           if i <> 0 then begin
-           txt := errortxt(i) + chr(0);
+           txt := errortxt(i);
            MessageBoxA(window, @txt[1], NIL, MB_OK);
           end
           else begin
@@ -2199,7 +2213,7 @@ begin
            i := mcg_LoadGraphic(objp, j, @tempbmp);
            freemem(objp); objp := NIL;
            if i <> 0 then begin
-            txt := mcg_errortxt + chr(0);
+            txt := mcg_errortxt;
             MessageBoxA(window, @txt[1], NIL, MB_OK)
            end
            else begin
@@ -2224,7 +2238,7 @@ begin
              filemode := 1; rewrite(f, 1); // write-only
              i := IOresult;
              if i <> 0 then begin
-              txt := errortxt(i) + chr(0);
+              txt := errortxt(i);
               MessageBoxA(window, @txt[1], NIL, MB_OK);
              end
              else begin
@@ -2235,7 +2249,7 @@ begin
               // Compress rendimu^ into objp.
               i := mcg_MemorytoPNG(@rendimu, @objp, @j);
               if i <> 0 then begin
-               txt := mcg_errortxt + chr(0);
+               txt := mcg_errortxt;
                MessageBoxA(window, @txt[1], NIL, MB_OK);
               end
               else begin
@@ -2243,7 +2257,7 @@ begin
                blockwrite(f, objp^, j);
                i := IOresult;
                if i <> 0 then begin
-                txt := errortxt(i) + chr(0);
+                txt := errortxt(i);
                 MessageBoxA(window, @txt[1], NIL, MB_OK);
                end;
                close(f);
@@ -2269,8 +2283,8 @@ begin
          end;
         end;
 
-        kind := 'Batch processing' + chr(0);
-        txt := 'Processing complete.' + chr(0);
+        kind := 'Batch processing';
+        txt := 'Processing complete.';
         MessageBoxA(window, @txt[1], @kind[1], MB_OK);
        end;
        freemem(filulist); filulist := NIL;
@@ -2282,14 +2296,15 @@ begin
       90:
       begin
        kind := 'PNG or BMP' + chr(0) + '*.png;*.bmp' + chr(0) + chr(0);
-       txt := chr(0);
+       setlength(txt, 268);
+       txt[1] := chr(0);
        fillbyte(openfilurec, sizeof(openfilurec), 0);
        with openfilurec do begin
         lStructSize := 76; // sizeof gives incorrect result?
         hwndOwner := window;
         lpstrFilter := @kind[1]; lpstrCustomFilter := NIL;
         nFilterIndex := 1;
-        lpstrFile := @txt[1]; nMaxFile := 255;
+        lpstrFile := @txt[1]; nMaxFile := 260;
         lpstrFileTitle := NIL; lpstrInitialDir := NIL; lpstrTitle := NIL;
         Flags := OFN_FILEMUSTEXIST;
        end;
@@ -2300,7 +2315,7 @@ begin
         filemode := 0; reset(f, 1); // read-only
         i := IOresult; // problem opening the file?
         if i <> 0 then begin
-         txt := errortxt(i) + chr(0);
+         txt := errortxt(i);
          MessageBoxA(window, @txt[1], NIL, MB_OK);
         end
         else begin
@@ -2311,7 +2326,7 @@ begin
          i := mcg_LoadGraphic(objp, j, @tempbmp);
          freemem(objp); objp := NIL;
          if i <> 0 then begin
-          txt := mcg_errortxt + chr(0);
+          txt := mcg_errortxt;
           MessageBoxA(window, @txt[1], NIL, MB_OK)
          end
          else begin
@@ -2322,7 +2337,6 @@ begin
           if length(txt) > 130 then txt := copy(txt, 1, 128) + '...';
           txt := 'Original: ' + txt + ' - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
           if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
-          txt := txt + chr(0);
           SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
          end;
          mcg_ForgetImage(@tempbmp);
@@ -2330,20 +2344,20 @@ begin
        end;
       end;
 
-      // Save view as PNG
+      // Save view as PNG.
       91:
       if lastactiveview <> $FF then SaveViewAsPNG(lastactiveview);
 
-      // Load config
+      // Load config.
       92: LoadConfig(window);
 
-      // Save config
+      // Save config.
       93: SaveConfig(window);
 
-      // Copy image to clipboard
+      // Copy image to clipboard.
       94: if lastactiveview <> $FF then CopyView(lastactiveview);
 
-      // Command: Paste from clipboard
+      // Command: Paste from clipboard.
       95:
       begin
        OpenClipboard(window);
@@ -2368,19 +2382,18 @@ begin
          // Set the window name: filename, format, color count.
          txt := 'Original - ' + strdec(length(viewdata[0].bmpdata.palette)) + ' colors';
          if viewdata[0].alpha = 4 then txt := txt + ' with alpha';
-         txt := txt + chr(0);
          SendMessageA(viewdata[0].winhandu, WM_SETTEXT, 0, ptrint(@txt[1]));
         end;
         mcg_ForgetImage(@tempbmp);
        end else
-        MessageBoxA(window, 'No graphic found on clipboard.' + chr(0), NIL, MB_OK);
+        MessageBoxA(window, 'No graphic found on clipboard.', NIL, MB_OK);
        CloseClipboard;
       end;
 
       // Import palette from a view.
       96: if lastactiveview <> $FF then ImportPalette(lastactiveview);
 
-      // Command: Clear preset palette entries
+      // Command: Clear preset palette entries.
       97:
       begin
        ClearPE(0, $FFFF);
@@ -2391,14 +2404,14 @@ begin
        ShowWindow(mv_StaticH[7], SW_HIDE);
       end;
 
-      // Command: Set Alpha rendering color
+      // Command: Set Alpha rendering color.
       98: DialogBoxIndirect(system.maininstance, @mv_Dlg, mv_MainWinH, @AlfaSelectorProc);
 
-      // Help: Manual
+      // Help: Manual.
       99:
       if HelpWinH = 0 then begin
        z := WS_TILEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN;
-       kind := 'Help' + chr(0);
+       kind := 'Help';
        rr.left := 0; rr.right := helpsizex;
        rr.top := 0; rr.bottom := helpsizey;
        AdjustWindowRect(@rr, z, FALSE);
@@ -2407,15 +2420,16 @@ begin
          0, 0, system.maininstance, NIL);
       end;
 
-      // File: Exit
+      // File: Exit.
       100: SendMessageA(mv_MainWinH, wm_close, 0, 0);
     end;
    end;
 
-   // Color Block coloring
+   // Color Block coloring.
    wm_ctlcolorstatic:
    if dword(lapu) = mv_ColorBlockH then begin
-    byte(txt[0]) := SendMessageA(mv_EditH[1], wm_gettext, 255, ptrint(@txt[1]));
+    setlength(txt, SendMessageA(mv_EditH[1], WM_GETTEXTLENGTH, 0, 0) + 1);
+    SendMessageA(mv_EditH[1], WM_GETTEXT, length(txt), ptrint(@txt[1]));
     i := valhex(txt);
     i := (i shr 16) or (i and $FF00) or ((i and $FF) shl 16);
     if txt = '' then i := SwapEndian(dword(neutralcolor)) shr 8;
@@ -2424,7 +2438,7 @@ begin
     mv_MainProc := LResult(mv_CBBrushH);
    end;
 
-   // Slider handling
+   // Slider handling.
    wm_VScroll, wm_HScroll:
    if wepu and $FFFF <> SB_ENDSCROLL then begin
     slideinfo.fMask := SIF_ALL;
@@ -2453,7 +2467,7 @@ begin
     if dword(lapu) = mv_SliderH[1] then
      DrawMagicList
     else if dword(lapu) = mv_SliderH[2] then begin
-     txt := 'Output palette size: ' + strdec(i) + ' colors' + chr(0);
+     txt := 'Output palette size: ' + strdec(i) + ' colors';
      SendMessageA(mv_StaticH[3], wm_settext, 0, ptrint(@txt[1]));
     end;
    end;
@@ -2484,8 +2498,9 @@ function SpawnMainWindow : boolean;
 // keypresses; whereas a normal window cannot process ws_tabstop. The latter
 // is a smaller loss...
 var windowclass : wndclass;
+    rr : rect;
     winmsg : msg;
-    txt : string;
+    txt : UTF8string;
     z : dword;
 begin
  SpawnMainWindow := FALSE;
@@ -2508,7 +2523,7 @@ begin
  windowclass.cbclsextra := 0;
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
- txt := 'BunnyIcon' + chr(0);
+ txt := 'BunnyIcon';
  windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_3Dface);
@@ -2522,7 +2537,7 @@ begin
  windowclass.cbclsextra := 0;
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
- txt := 'BunnyIcon' + chr(0);
+ txt := 'BunnyIcon';
  windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_3Dface);
@@ -2537,12 +2552,12 @@ begin
  windowclass.cbwndextra := 0;
  windowclass.hinstance := system.maininstance;
 
- txt := 'BunnyIcon' + chr(0);
+ txt := 'BunnyIcon';
  windowclass.hicon := LoadIcon(system.maininstance, @txt[1]);
  windowclass.hcursor := LoadCursor(0, idc_arrow);
  windowclass.hbrbackground := GetSysColorBrush(color_btnface);
 
- txt := 'BunnyMenu' + chr(0);
+ txt := 'BunnyMenu';
  windowclass.lpszmenuname := @txt[1];
  windowclass.lpszclassname := @mainclass[1];
  if RegisterClass(windowclass) = 0 then halt(98);
@@ -2559,16 +2574,16 @@ begin
  if mv_MainWinH = 0 then halt(99);
 
  // Load the keyboard shortcut table from bunny.res.
- txt := 'BunnyHop' + chr(0);
+ txt := 'BunnyHop';
  mv_AcceleratorTable := LoadAccelerators(system.maininstance, @txt[1]);
 
  // Create a right-click pop-up menu for the views.
  mv_ContextMenu := CreatePopupMenu;
- txt := '&Copy to clipboard ' + chr(8) + '(CTRL+C)' + chr(0);
+ txt := '&Copy to clipboard ' + chr(8) + '(CTRL+C)';
  InsertMenu(mv_ContextMenu, 0, MF_BYPOSITION, 94, @txt[1]);
- txt := '&Save as PNG ' + chr(8) + '(CTRL+S)' + chr(0);
+ txt := '&Save as PNG ' + chr(8) + '(CTRL+S)';
  InsertMenu(mv_ContextMenu, 1, MF_BYPOSITION, 91, @txt[1]);
- txt := 'I&mport palette ' + chr(8) + '(CTRL+M)' + chr(0);
+ txt := 'I&mport palette ' + chr(8) + '(CTRL+M)';
  InsertMenu(mv_ContextMenu, 2, MF_BYPOSITION, 96, @txt[1]);
 
  // Just in case, make sure we are in the user's face.
@@ -2587,7 +2602,8 @@ end;
 
 procedure DoInits;
 var ptxt : pchar;
-    txt : string;
+    rr : rect;
+    txt : UTF8string;
     i, j : dword;
 begin
  // Get the current directory! It is used for the config file.
@@ -2612,7 +2628,7 @@ begin
   txt := '\shell32.dll' + chr(0);
   move(txt[1], ptxt[j], length(txt));
   HelpWinH := LoadLibraryA(ptxt);
-  txt := 'SHGetSpecialFolderPathA' + chr(0);
+  txt := 'SHGetSpecialFolderPathA';
   pointer(SHGetSpecialFolderPath) := GetProcAddress(HelpWinH, @txt[1]);
   if pointer(SHGetSpecialFolderPath) = NIL then halt(86);
   if SHGetSpecialFolderPath(0, ptxt, CSIDL_APPDATA, TRUE) = FALSE then begin
@@ -2631,7 +2647,7 @@ begin
   i := IOresult;
  end;
  if i <> 0 then begin
-  txt := errortxt(i) + ' trying to write in own directory as well as ' + homedir + chr(0);
+  txt := errortxt(i) + ' trying to write in own directory as well as ' + homedir;
   MessageBoxA(0, @txt[1], NIL, MB_OK); halt;
  end;
  close(stdout); erase(stdout);
@@ -2643,6 +2659,7 @@ begin
  mv_AcceleratorTable := 0;
  dword(neutralcolor) := SwapEndian(GetSysColor(color_3Dface)) shr 8;
 
+ rr.left := 0; // silence a compiler warning
  GetClientRect(GetDesktopWindow, rr); // this gives the desktop resolution
  funsizex := rr.right div 3; funsizey := rr.bottom div 3;
  helpsizex := 512; helpsizey := 450;
@@ -2678,6 +2695,7 @@ end;
 procedure MainLoop;
 var winmsg : msg;
 begin
+ winmsg.hwnd := 0; // silence a compiler warning
  while (mv_EndProgram = FALSE) and (getmessage(@winmsg, 0, 0, 0))
  do begin
   if TranslateAccelerator(mv_MainWinH, mv_AcceleratorTable, winmsg) = 0

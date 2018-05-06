@@ -191,7 +191,7 @@ var i, j, k, wptr : dword;
     palumiss : boolean;
     tempcolor : RGBA64;
     x, y, z, alf : longint;
-    wassup : string;
+    wassup : UTF8string;
 label JustRender;
 begin
  CompressColors := 0;
@@ -217,7 +217,7 @@ begin
    end;
   end;
  if j <> 0 then begin
-  wassup := 'You have ' + strdec(j) + ' pre-defined palette entries above the desired palette size. They may not be included in the processed image.' + chr(13) + 'Proceed anyway?' + chr(0);
+  wassup := 'You have ' + strdec(j) + ' pre-defined palette entries above the desired palette size. They may not be included in the processed image.' + chr(13) + 'Proceed anyway?';
   i := MessageBoxA(0, @wassup[1], 'Caution' + chr(0), MB_OKCANCEL or MB_TASKMODAL);
   if i = IDCANCEL then begin
    SendMessageA(funwinhandle, WM_CLOSE, 0, 0);
@@ -341,7 +341,7 @@ begin
  //     2 --> 3^3 = 27 points to place (place only if 54+ free slots)
  //     3 --> 4^3 = 64 points to place (place only if 128+ free slots) ...
  i := 2;
- while (i * i * i) shl 1 <= option.palsize - palusize do inc(i);
+ while (i * i * i) shl 1 <= dword(option.palsize - palusize) do inc(i);
  dec(i, 2);
 
  // If the target palette size is too small for initial spot placement, and
@@ -384,7 +384,7 @@ begin
  // Shake the palette up a bit to start with, eliminate any matchless ones.
  sleep(50);
  if compressing = FALSE then exit;
- wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
+ wassup := 'Mean relocation... (' + strdec(palusize) + ')';
  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
  mean_reloc;
 
@@ -395,7 +395,7 @@ begin
   faktor := ((option.palsize - palusize) shr 3) + 1;
   if faktor > palusize shr 1 then faktor := (palusize shr 1) + 1;
   // Map wgram to the existing palette, see where the biggest error is.
-  wassup := 'Scoring deviation... (' + strdec(palusize) + ')' + chr(0);
+  wassup := 'Scoring deviation... (' + strdec(palusize) + ')';
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
   error_calc;
 
@@ -412,7 +412,7 @@ begin
   end;
 
   // Shake the new palette to represent colors optimally.
-  wassup := 'Mean relocation... (' + strdec(palusize) + ')' + chr(0);
+  wassup := 'Mean relocation... (' + strdec(palusize) + ')';
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
   sleep(0);
   mean_reloc;
@@ -439,7 +439,7 @@ begin
  {$ifdef postopop}
  // Post-operation optimisation
  if palusize = option.palsize then begin
-  wassup := 'Optimising...' + chr(0);
+  wassup := 'Optimising...';
   SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
 
   // Remember the current palette and its total error.
@@ -505,7 +505,7 @@ begin
  // The dithered result goes into rendimu.
  // Lots of useful information on this at Libcaca: http://caca.zoy.org/study/
  JustRender:
- wassup := 'Rendering...' + chr(0);
+ wassup := 'Rendering...';
  SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
  {$note todo: the whole dithering shebang needs a rewrite and modularisation}
 
@@ -541,7 +541,7 @@ begin
   for loopy := 0 to viewdata[0].bmpdata.sizey - 1 do begin
 
    if loopy and 7 = 0 then begin
-    wassup := 'Rendering... ' + strdec(dword(viewdata[0].bmpdata.sizey - loopy)) + chr(0);
+    wassup := 'Rendering... ' + strdec(dword(viewdata[0].bmpdata.sizey - loopy));
     SendMessageA(funstatus, WM_SETTEXT, 0, ptrint(@wassup[1]));
    end;
 
@@ -614,7 +614,7 @@ begin
     longint(palu[i]) := longint(palu[i]) + alf * 2; inc(i);
     if diffuselist[0] <> 0 then i := (i + 12) and k;
     // -1x, +1y (or +0x, +1y if in reverse mode)
-    j := (i + viewdata[0].bmpdata.sizex * 4 + 4) and k;
+    j := (i + dword(viewdata[0].bmpdata.sizex * 4) + 4) and k;
     longint(palu[j]) := longint(palu[j]) + x; inc(j);
     longint(palu[j]) := longint(palu[j]) + y; inc(j);
     longint(palu[j]) := longint(palu[j]) + z; inc(j);
@@ -625,7 +625,7 @@ begin
     longint(palu[j]) := longint(palu[j]) + z; inc(j);
     longint(palu[j]) := longint(palu[j]) + alf;
    end;
-   diffusecount := (diffusecount + viewdata[0].bmpdata.sizex * 4 + 16) and k;
+   diffusecount := (diffusecount + dword(viewdata[0].bmpdata.sizex * 4) + 16) and k;
   end;
  end
  else begin

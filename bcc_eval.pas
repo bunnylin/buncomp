@@ -204,8 +204,9 @@ begin
  if length(viewdata[sr].bmpdata.palette) <> 0 then exit;
 
  gramsize := 0;
- filldword(bucketitems, length(bucketitems), 0);
+ bucketitems[0] := 0; // silence a compiler warning
  setlength(hash[0], 0); // silence a compiler warning
+ filldword(bucketitems, length(bucketitems), 0);
 
  // Each 32-bit color (24-bit images are read as 32-bit) is read into HVAR,
  // then reduced to a 12-bit ID tag, placed in j. There are 4096 hashing

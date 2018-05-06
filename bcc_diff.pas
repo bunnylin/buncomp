@@ -190,7 +190,7 @@ begin
  // Finally, calculate the difference-value itself
  // Numbers have to be squared, while trying hard not to overflow a dword,
  // without losing the lower end's granularity completely.
- diffYCC := Y + Cr + Cb + aeon; // nominal range of sum = [0..360443]
+ diffYCC := dword(Y) + Cr + Cb + aeon; // nominal range of sum = [0..360443]
  Y := Y shr 2; // nominal range [0..32767], square 1 073 676 289
  Cr := Cr shr 2; // nominal range [0..24575], square 603 930 625
  Cb := Cb shr 2; // nominal range [0..16383], square 268 402 689
