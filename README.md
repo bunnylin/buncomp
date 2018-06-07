@@ -1,6 +1,8 @@
 Bunnylin's Chromaticity Compressor
 ==================================
 
+Now available at [gitlab](https://gitlab.com/bunnylin/buncomp/)!
+
 This free and open-source program takes an image with lots of different
 colors, and momentarily returns the image with far fewer colors, but
 still looking almost as good.
